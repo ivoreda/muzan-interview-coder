@@ -1,4 +1,4 @@
-# OA Coder
+# Muzan Interview Coder
 
 A powerful tool designed to help solve coding problems by capturing screenshots and utilizing AI for analysis.
 
