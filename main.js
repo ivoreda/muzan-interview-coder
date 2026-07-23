@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain } = require('electron');
 const path = require('path');
 const screenshot = require('screenshot-desktop');
 const fs = require('fs');
@@ -20,8 +20,8 @@ try {
         console.log("Model not specified in config, using default:", config.model);
     }
 } catch (err) {
-    console.error("Error reading config:", err);
-    app.quit();
+    console.error("Error reading config:", err.message);
+    process.exit(1);
 }
 const openai = new OpenAI({ apiKey: config.apiKey });
 
@@ -30,6 +30,9 @@ let screenshots = [];
 let multiPageMode = false;
 let showWindow = true;
 let stage = 0; // 0 = boot up stage, 1 = multi capture, 2 = AI Answered
+let isListening = false;
+
+const INSTRUCTIONS = "Ctrl+Shift+S: Screenshot | Ctrl+Shift+A: Multi-mode | Ctrl+Shift+V: Voice | Ctrl+Shift+W: Hide Window | Ctrl+Shift+Q: Close";
 
 function updateInstruction(instruction) {
     if (mainWindow?.webContents) {
@@ -117,10 +120,54 @@ async function processScreenshots() {
 function resetProcess() {
     screenshots = [];
     multiPageMode = false;
+    isListening = false;
     mainWindow.webContents.send('clear-result');
-    updateInstruction("Ctrl+Shift+S: Screenshot | Ctrl+Shift+A: Multi-mode | Ctrl+Shift+W: Hide Window | Ctrl+Shift+Q: Close");
+    updateInstruction(INSTRUCTIONS);
     stage = 0;
 }
+
+async function transcribeAndAnswer(base64Audio) {
+    const audioPath = path.join(app.getPath('temp'), `voice_${Date.now()}.webm`);
+    try {
+        updateInstruction("Transcribing...");
+        fs.writeFileSync(audioPath, Buffer.from(base64Audio, 'base64'));
+
+        const transcription = await openai.audio.transcriptions.create({
+            file: fs.createReadStream(audioPath),
+            model: 'whisper-1'
+        });
+
+        const question = transcription.text?.trim();
+        if (!question) {
+            throw new Error("No speech detected.");
+        }
+
+        updateInstruction("Thinking...");
+
+        const response = await openai.chat.completions.create({
+            model: config.model,
+            messages: [{
+                role: "user",
+                content: `Please answer the following interview question. Provide a complete answer, and ensure all code snippets are wrapped in standard markdown code blocks (e.g. \`\`\`javascript ... \`\`\`).\n\nQuestion: ${question}`
+            }],
+            max_completion_tokens: 5000
+        });
+
+        mainWindow.webContents.send('analysis-result', response.choices[0].message.content);
+        stage = 2;
+    } catch (err) {
+        console.error("Error in transcribeAndAnswer:", err);
+        if (mainWindow.webContents) {
+            mainWindow.webContents.send('error', err.message);
+        }
+    } finally {
+        fs.unlink(audioPath, () => {});
+    }
+}
+
+ipcMain.on('voice-audio', (event, base64Audio) => {
+    transcribeAndAnswer(base64Audio);
+});
 
 function createWindow() {
     stage = 0;
@@ -141,6 +188,10 @@ function createWindow() {
 
     mainWindow.loadFile('index.html');
     mainWindow.setContentProtection(true);
+
+    mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+        callback(permission === 'media');
+    });
     mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     mainWindow.setAlwaysOnTop(true, 'screen-saver', 1);
 
@@ -168,6 +219,17 @@ function createWindow() {
             stage = 1;
         } catch (error) {
             console.error("Ctrl+Shift+A error:", error);
+        }
+    });
+
+    // Ctrl+Shift+V => toggle voice listening
+    globalShortcut.register('CommandOrControl+Shift+V', () => {
+        isListening = !isListening;
+        if (isListening) {
+            mainWindow.webContents.send('start-listening');
+            updateInstruction("Listening... Ctrl+Shift+V to stop");
+        } else {
+            mainWindow.webContents.send('stop-listening');
         }
     });
 

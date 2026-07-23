@@ -151,6 +151,9 @@
   <script>
     const { ipcRenderer } = require('electron');
 
+    let mediaRecorder = null;
+    let audioChunks = [];
+
     marked.setOptions({
       sanitize: false, // marked doesn't suggest sanitize: true anymore, use a library if needed
       breaks: true,
@@ -210,6 +213,36 @@
       'clear-result': () => {
         document.getElementById('response-box').innerHTML = "";
         hideOverlay();
+      },
+
+      'start-listening': async () => {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          audioChunks = [];
+          mediaRecorder = new MediaRecorder(stream);
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) audioChunks.push(e.data);
+          };
+          mediaRecorder.onstop = () => {
+            stream.getTracks().forEach(track => track.stop());
+            const blob = new Blob(audioChunks, { type: 'audio/webm' });
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const base64Audio = reader.result.split(',')[1];
+              ipcRenderer.send('voice-audio', base64Audio);
+            };
+            reader.readAsDataURL(blob);
+          };
+          mediaRecorder.start();
+        } catch (err) {
+          updateBanner('Microphone access denied: ' + err.message, true);
+        }
+      },
+
+      'stop-listening': () => {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+          mediaRecorder.stop();
+        }
       }
     };
 
@@ -223,7 +256,7 @@
       });
     });
 
-    updateBanner("Ctrl+Shift+S: Screenshot | Ctrl+Shift+A: Multi-mode | Ctrl+Shift+W: Hide Window | Ctrl+Shift+Q: Close");
+    updateBanner("Ctrl+Shift+S: Screenshot | Ctrl+Shift+A: Multi-mode | Ctrl+Shift+V: Voice | Ctrl+Shift+W: Hide Window | Ctrl+Shift+Q: Close");
   </script>
 </body>
 
