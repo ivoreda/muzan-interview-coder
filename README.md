@@ -1,6 +1,6 @@
 # Muzan Interview Coder
 
-A powerful tool designed to help solve coding problems by capturing screenshots and utilizing AI for analysis.
+A powerful tool designed to help solve coding problems by capturing screenshots and utilizing AI for analysis — plus live listening for spoken interview questions.
 
 ## Setup
 
@@ -16,16 +16,22 @@ To use this program, you need to create a `config.json` file in the project root
 }
 ```
 
+Optional: set `"sttModel": "gpt-4o-mini-transcribe"` (default) for live speech-to-text.
+
 ## Usage
 
 Once the application is running, you can use the following global shortcuts:
 
-### Capture & Process
-- **Ctrl+Shift+S**: Take a screenshot and solve immediately (or finalize Multi-mode).
-- **Ctrl+Shift+A**: Enter/Capture in **Multi-mode** (allows capturing multiple pages/sections).
+### Live listening (spoken questions)
+- **Ctrl+Shift+V**: Toggle listen session on/off (streams mic to live transcription; does not answer by itself).
+- **Ctrl+Shift+Enter**: Answer now using the recent live transcript and any screenshots you explicitly captured for this question.
+
+### Capture & Process (on-screen / code)
+- **Ctrl+Shift+S**: Take a screenshot and solve immediately from images only (or finalize Multi-mode as image-only).
+- **Ctrl+Shift+A**: Enter/Capture in **Multi-mode** (accumulate pages/sections without solving). Then use **Ctrl+Shift+Enter** to include spoken context, or **Ctrl+Shift+S** for image-only.
 
 ### Application Control
-- **Ctrl+Shift+R**: Reset the current process (clears screenshots and results).
+- **Ctrl+Shift+R**: Reset (clears screenshots, transcript buffer used for answering, and results). Listen session can stay on.
 - **Ctrl+Shift+W**: Toggle window visibility (Hide/Show).
 - **Ctrl+Shift+Q**: Quit the application.
 
@@ -34,6 +40,7 @@ Once the application is running, you can use the following global shortcuts:
 
 ## How it Works
 1. Launch the app using `npm start`.
-2. Navigate to the coding problem you want to solve.
-3. Use **Ctrl+Shift+S** (or **Ctrl+Shift+A** for multiple captures) to capture the problem.
-4. The AI will process the image(s) and display the solution in the overlay window.
+2. When the interview starts, press **Ctrl+Shift+V** once to start listening.
+3. For spoken questions: after the interviewer asks, press **Ctrl+Shift+Enter**.
+4. For on-screen problems or code to troubleshoot: **Ctrl+Shift+A** (or **S** for image-only solve). To fuse speech + screen, capture with **A**, then **Enter**.
+5. The AI displays the solution in the overlay window.

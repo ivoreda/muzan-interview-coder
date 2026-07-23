@@ -3,6 +3,8 @@ const path = require('path');
 const screenshot = require('screenshot-desktop');
 const fs = require('fs');
 const { OpenAI } = require('openai');
+const { TranscriptBuffer } = require('./transcriptBuffer');
+const { RealtimeSttSession } = require('./realtimeStt');
 
 let config;
 try {
@@ -14,7 +16,6 @@ try {
         throw new Error("API key is missing in config.json");
     }
 
-    // Set default model if not specified
     if (!config.model) {
         config.model = "gpt-4o-mini";
         console.log("Model not specified in config, using default:", config.model);
@@ -31,12 +32,37 @@ let multiPageMode = false;
 let showWindow = true;
 let stage = 0; // 0 = boot up stage, 1 = multi capture, 2 = AI Answered
 let isListening = false;
+let answerInFlight = false;
+let sttSession = null;
+let partialTranscript = '';
+const transcriptBuffer = new TranscriptBuffer(90000);
 
-const INSTRUCTIONS = "Ctrl+Shift+S: Screenshot | Ctrl+Shift+A: Multi-mode | Ctrl+Shift+V: Voice | Ctrl+Shift+W: Hide Window | Ctrl+Shift+Q: Close";
+const INSTRUCTIONS = "Ctrl+Shift+V: Listen | Ctrl+Shift+Enter: Answer | Ctrl+Shift+S: Screenshot | Ctrl+Shift+A: Multi | Ctrl+Shift+W: Hide | Ctrl+Shift+Q: Quit";
+
+function getPendingTranscript() {
+    const committed = transcriptBuffer.getText();
+    const partial = (partialTranscript || '').trim();
+    if (committed && partial) return `${committed} ${partial}`.trim();
+    return committed || partial;
+}
+
+function pushTranscriptPreview() {
+    if (!mainWindow?.webContents) return;
+    mainWindow.webContents.send('transcript-update', {
+        text: getPendingTranscript(),
+        listening: isListening
+    });
+}
+
+function clearTranscriptState() {
+    transcriptBuffer.clear();
+    partialTranscript = '';
+    pushTranscriptPreview();
+}
 
 function updateInstruction(instruction) {
     if (mainWindow?.webContents) {
-        mainWindow.webContents.send('update-instruction', instruction);
+        mainWindow.webContents.send('update-instruction', instruction || INSTRUCTIONS);
     }
 }
 
@@ -75,7 +101,7 @@ function showMainWindow() {
     if (stage == 2)
         mainWindow.webContents.send('show-app');
     else
-        updateInstruction();
+        updateInstruction(isListening ? "Listening... Ctrl+Shift+V to stop | Ctrl+Shift+Enter: Answer" : INSTRUCTIONS);
     showWindow = true;
 }
 
@@ -85,28 +111,48 @@ function hideMainWindow() {
     showWindow = false;
 }
 
+function buildAnswerContent(transcript, images) {
+    const parts = [];
+    let prompt = "Please answer the following interview question. Provide a complete answer, and ensure all code snippets are wrapped in standard markdown code blocks (e.g. ```javascript ... ```).";
+
+    if (transcript && images.length) {
+        prompt += " Use both the spoken question/context and the screenshot(s). If the screenshots show code, troubleshoot or solve it as asked.";
+        parts.push({ type: "text", text: `${prompt}\n\nSpoken context:\n${transcript}` });
+    } else if (transcript) {
+        parts.push({ type: "text", text: `${prompt}\n\nQuestion: ${transcript}` });
+    } else {
+        parts.push({
+            type: "text",
+            text: "Please solve or troubleshoot the problem shown in the screenshots. Provide the full solution, and crucially, ensure all code snippets are wrapped in standard markdown code blocks (e.g., ```javascript ... ```)."
+        });
+    }
+
+    for (const img of images) {
+        parts.push({
+            type: "image_url",
+            image_url: { url: `data:image/png;base64,${img}` }
+        });
+    }
+
+    return parts;
+}
+
+async function runModel(contentParts) {
+    const response = await openai.chat.completions.create({
+        model: config.model,
+        messages: [{ role: "user", content: contentParts }],
+        max_completion_tokens: 5000
+    });
+    return response.choices[0].message.content;
+}
+
 async function processScreenshots() {
     try {
-        // Build message with text + each screenshot
-        const messages = [
-            { type: "text", text: "Please solve the problem shown in the screenshots. Provide the full solution, and crucially, ensure all code snippets are wrapped in standard markdown code blocks (e.g., ```javascript ... ```)." }
-        ];
-        for (const img of screenshots) {
-            messages.push({
-                type: "image_url",
-                image_url: { url: `data:image/png;base64,${img}` }
-            });
-        }
-
-        // Make the request
-        const response = await openai.chat.completions.create({
-            model: config.model,
-            messages: [{ role: "user", content: messages }],
-            max_completion_tokens: 5000
-        });
-
-        // Send the text to the renderer
-        mainWindow.webContents.send('analysis-result', response.choices[0].message.content);
+        const content = buildAnswerContent('', screenshots);
+        const result = await runModel(content);
+        screenshots = [];
+        multiPageMode = false;
+        mainWindow.webContents.send('analysis-result', result);
         stage = 2;
     } catch (err) {
         console.error("Error in processScreenshots:", err);
@@ -116,57 +162,128 @@ async function processScreenshots() {
     }
 }
 
-// Reset everything
-function resetProcess() {
-    screenshots = [];
-    multiPageMode = false;
-    isListening = false;
-    mainWindow.webContents.send('clear-result');
-    updateInstruction(INSTRUCTIONS);
-    stage = 0;
-}
+async function answerNow() {
+    if (answerInFlight) return;
 
-async function transcribeAndAnswer(base64Audio) {
-    const audioPath = path.join(app.getPath('temp'), `voice_${Date.now()}.webm`);
+    const transcript = getPendingTranscript();
+    const images = [...screenshots];
+
+    if (!transcript && images.length === 0) {
+        updateInstruction("Nothing to answer yet");
+        return;
+    }
+
+    answerInFlight = true;
     try {
-        updateInstruction("Transcribing...");
-        fs.writeFileSync(audioPath, Buffer.from(base64Audio, 'base64'));
-
-        const transcription = await openai.audio.transcriptions.create({
-            file: fs.createReadStream(audioPath),
-            model: 'whisper-1'
-        });
-
-        const question = transcription.text?.trim();
-        if (!question) {
-            throw new Error("No speech detected.");
-        }
-
         updateInstruction("Thinking...");
-
-        const response = await openai.chat.completions.create({
-            model: config.model,
-            messages: [{
-                role: "user",
-                content: `Please answer the following interview question. Provide a complete answer, and ensure all code snippets are wrapped in standard markdown code blocks (e.g. \`\`\`javascript ... \`\`\`).\n\nQuestion: ${question}`
-            }],
-            max_completion_tokens: 5000
-        });
-
-        mainWindow.webContents.send('analysis-result', response.choices[0].message.content);
+        const content = buildAnswerContent(transcript, images);
+        const result = await runModel(content);
+        screenshots = [];
+        multiPageMode = false;
+        clearTranscriptState();
+        mainWindow.webContents.send('analysis-result', result);
         stage = 2;
+        if (isListening) {
+            updateInstruction("Listening... Ctrl+Shift+V to stop | Ctrl+Shift+Enter: Answer");
+        }
     } catch (err) {
-        console.error("Error in transcribeAndAnswer:", err);
+        console.error("Error in answerNow:", err);
         if (mainWindow.webContents) {
             mainWindow.webContents.send('error', err.message);
         }
     } finally {
-        fs.unlink(audioPath, () => {});
+        answerInFlight = false;
     }
 }
 
-ipcMain.on('voice-audio', (event, base64Audio) => {
-    transcribeAndAnswer(base64Audio);
+function stopListeningSession() {
+    isListening = false;
+    partialTranscript = '';
+    if (sttSession) {
+        sttSession.stop();
+        sttSession = null;
+    }
+    if (mainWindow?.webContents) {
+        mainWindow.webContents.send('stop-listening');
+    }
+    pushTranscriptPreview();
+}
+
+function startListeningSession() {
+    if (sttSession) {
+        sttSession.stop();
+        sttSession = null;
+    }
+
+    partialTranscript = '';
+    sttSession = new RealtimeSttSession({
+        apiKey: config.apiKey,
+        model: config.sttModel || 'gpt-4o-mini-transcribe',
+        onTranscript: (text) => {
+            transcriptBuffer.append(text);
+            pushTranscriptPreview();
+        },
+        onPartial: (text) => {
+            partialTranscript = text || '';
+            pushTranscriptPreview();
+        },
+        onError: (err) => {
+            console.error("STT error:", err.message);
+            if (mainWindow?.webContents) {
+                mainWindow.webContents.send('update-instruction', `STT error: ${err.message}`);
+            }
+        },
+        onClose: () => {
+            if (!isListening) return;
+            isListening = false;
+            sttSession = null;
+            partialTranscript = '';
+            if (mainWindow?.webContents) {
+                mainWindow.webContents.send('stop-listening');
+                updateInstruction("Listening stopped (connection lost). " + INSTRUCTIONS);
+            }
+            pushTranscriptPreview();
+        }
+    });
+
+    isListening = true;
+    sttSession.start();
+    mainWindow.webContents.send('start-listening');
+    updateInstruction("Listening... Ctrl+Shift+V to stop | Ctrl+Shift+Enter: Answer");
+    pushTranscriptPreview();
+}
+
+function toggleListening() {
+    if (isListening) {
+        stopListeningSession();
+        clearTranscriptState();
+        updateInstruction(INSTRUCTIONS);
+    } else {
+        startListeningSession();
+    }
+}
+
+function resetProcess() {
+    screenshots = [];
+    multiPageMode = false;
+    clearTranscriptState();
+    mainWindow.webContents.send('clear-result');
+    updateInstruction(isListening
+        ? "Listening... Ctrl+Shift+V to stop | Ctrl+Shift+Enter: Answer"
+        : INSTRUCTIONS);
+    stage = 0;
+}
+
+ipcMain.on('audio-chunk', (event, base64Pcm16) => {
+    if (isListening && sttSession) {
+        sttSession.appendAudio(base64Pcm16);
+    }
+});
+
+ipcMain.on('listen-failed', (event, message) => {
+    stopListeningSession();
+    clearTranscriptState();
+    updateInstruction(`Microphone access denied: ${message}`);
 });
 
 function createWindow() {
@@ -195,7 +312,7 @@ function createWindow() {
     mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     mainWindow.setAlwaysOnTop(true, 'screen-saver', 1);
 
-    // Ctrl+Shift+S => single or final screenshot
+    // Ctrl+Shift+S => image-only solve (or finalize multi-mode)
     globalShortcut.register('CommandOrControl+Shift+S', async () => {
         try {
             const img = await captureScreenshot();
@@ -206,32 +323,31 @@ function createWindow() {
         }
     });
 
-    // Ctrl+Shift+A => multi-page mode
+    // Ctrl+Shift+A => multi-page mode (capture without solving)
     globalShortcut.register('CommandOrControl+Shift+A', async () => {
         try {
             if (!multiPageMode) {
                 multiPageMode = true;
-                updateInstruction("Multi-mode: Ctrl+Shift+A to add, Ctrl+Shift+S to finalize");
+                updateInstruction("Multi-mode: Ctrl+Shift+A to add, Ctrl+Shift+Enter to answer (or Ctrl+Shift+S for image-only)");
             }
             const img = await captureScreenshot();
             screenshots.push(img);
-            updateInstruction("Multi-mode: Ctrl+Shift+A to add, Ctrl+Shift+S to finalize");
+            updateInstruction(`Multi-mode: ${screenshots.length} shot(s). Ctrl+Shift+A add | Ctrl+Shift+Enter answer | Ctrl+Shift+S image-only`);
             stage = 1;
         } catch (error) {
             console.error("Ctrl+Shift+A error:", error);
         }
     });
 
-    // Ctrl+Shift+V => toggle voice listening
+    // Ctrl+Shift+V => toggle live listen session
     globalShortcut.register('CommandOrControl+Shift+V', () => {
-        isListening = !isListening;
-        if (isListening) {
-            mainWindow.webContents.send('start-listening');
-            updateInstruction("Listening... Ctrl+Shift+V to stop");
-        } else {
-            mainWindow.webContents.send('stop-listening');
-        }
+        toggleListening();
     });
+
+    // Ctrl+Shift+Enter/Return => answer from live transcript + explicit screenshots
+    const answerHotkey = () => { answerNow(); };
+    globalShortcut.register('CommandOrControl+Shift+Enter', answerHotkey);
+    globalShortcut.register('CommandOrControl+Shift+Return', answerHotkey);
 
     // Ctrl+Shift+R => reset
     globalShortcut.register('CommandOrControl+Shift+R', () => {
@@ -251,6 +367,7 @@ function createWindow() {
     // Ctrl+Shift+Q => Quit the application
     globalShortcut.register('CommandOrControl+Shift+Q', () => {
         console.log("Quitting application...");
+        stopListeningSession();
         app.quit();
     });
 
@@ -281,10 +398,16 @@ function createWindow() {
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
+    stopListeningSession();
     globalShortcut.unregisterAll();
     if (process.platform !== 'darwin') {
         app.quit();
     }
+});
+
+app.on('will-quit', () => {
+    stopListeningSession();
+    globalShortcut.unregisterAll();
 });
 
 app.on('activate', () => {

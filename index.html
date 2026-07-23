@@ -33,11 +33,53 @@
       padding: 8px 15px;
       font-size: 14px;
       border-radius: 0 0 8px 8px;
-      z-index: 9999;
+      z-index: 10001;
       box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
       transition: opacity 0.3s ease;
       user-select: none;
       -webkit-app-region: drag;
+    }
+
+    #transcript-preview {
+      position: fixed;
+      top: 55px;
+      right: 1%;
+      left: auto;
+      transform: none;
+      width: 19%;
+      height: calc(100vh - 75px);
+      max-height: calc(100vh - 75px);
+      overflow-y: auto;
+      background: rgba(0, 0, 0, 0.88);
+      color: #d8d8d8;
+      padding: 10px 14px;
+      font-size: 13px;
+      line-height: 1.45;
+      border-radius: 8px;
+      z-index: 10002;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+      display: none;
+      white-space: pre-wrap;
+      word-break: break-word;
+      -webkit-app-region: no-drag;
+      user-select: text;
+    }
+
+    #transcript-preview.visible {
+      display: block;
+    }
+
+    #transcript-preview .label {
+      color: #9ad0ff;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+
+    #transcript-preview .empty {
+      color: #888;
+      font-style: italic;
     }
 
     #response-overlay {
@@ -50,7 +92,7 @@
       opacity: 0;
       visibility: hidden;
       transition: opacity 0.3s ease, visibility 0.3s;
-      z-index: 9998;
+      z-index: 10000;
       backdrop-filter: blur(3px);
       -webkit-app-region: drag;
     }
@@ -62,16 +104,17 @@
 
     #response-box {
       position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      width: 90%;
-      max-width: 900px;
-      max-height: 90vh;
+      top: 55px;
+      left: 1%;
+      transform: none;
+      width: 78%;
+      max-width: none;
+      height: calc(100vh - 75px);
+      max-height: calc(100vh - 75px);
       overflow-y: auto;
       background: rgba(25, 25, 25, 0.95);
       color: #fff;
-      padding: 25px;
+      padding: 20px;
       box-sizing: border-box;
       font-size: 15px;
       line-height: 1.5;
@@ -143,6 +186,10 @@
 
 <body>
   <div id="instruction-banner"></div>
+  <div id="transcript-preview" aria-live="polite">
+    <div class="label">Transcript (sent on Answer)</div>
+    <div id="transcript-text" class="empty">Listening for speech…</div>
+  </div>
   <div id="response-overlay">
     <div id="response-box"></div>
   </div>
@@ -151,14 +198,97 @@
   <script>
     const { ipcRenderer } = require('electron');
 
-    let mediaRecorder = null;
-    let audioChunks = [];
+    let mediaStream = null;
+    let audioContext = null;
+    let processorNode = null;
+    let silentGain = null;
 
     marked.setOptions({
       sanitize: false, // marked doesn't suggest sanitize: true anymore, use a library if needed
       breaks: true,
       gfm: true
     });
+
+    function floatTo16BitPCM(float32Array) {
+      const pcm = new Int16Array(float32Array.length);
+      for (let i = 0; i < float32Array.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32Array[i]));
+        pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+      return pcm;
+    }
+
+    // Linear resample to 24 kHz (AudioContext often ignores the requested rate).
+    function resampleTo24k(float32Array, inputRate) {
+      if (inputRate === 24000) return float32Array;
+      const ratio = inputRate / 24000;
+      const outLength = Math.max(1, Math.floor(float32Array.length / ratio));
+      const output = new Float32Array(outLength);
+      for (let i = 0; i < outLength; i++) {
+        const srcIndex = i * ratio;
+        const i0 = Math.floor(srcIndex);
+        const i1 = Math.min(i0 + 1, float32Array.length - 1);
+        const frac = srcIndex - i0;
+        output[i] = float32Array[i0] * (1 - frac) + float32Array[i1] * frac;
+      }
+      return output;
+    }
+
+    function stopAudioCapture() {
+      if (processorNode) {
+        try { processorNode.disconnect(); } catch (_) {}
+        processorNode.onaudioprocess = null;
+        processorNode = null;
+      }
+      if (silentGain) {
+        try { silentGain.disconnect(); } catch (_) {}
+        silentGain = null;
+      }
+      if (audioContext) {
+        audioContext.close().catch(() => {});
+        audioContext = null;
+      }
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(track => track.stop());
+        mediaStream = null;
+      }
+    }
+
+    async function startAudioCapture() {
+      stopAudioCapture();
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      });
+
+      audioContext = new AudioContext({ sampleRate: 24000 });
+      const source = audioContext.createMediaStreamSource(mediaStream);
+      processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+      silentGain = audioContext.createGain();
+      silentGain.gain.value = 0;
+
+      processorNode.onaudioprocess = (event) => {
+        const input = event.inputBuffer.getChannelData(0);
+        const resampled = resampleTo24k(input, audioContext.sampleRate);
+        const pcm = floatTo16BitPCM(resampled);
+        const base64 = Buffer.from(pcm.buffer).toString('base64');
+        ipcRenderer.send('audio-chunk', base64);
+      };
+
+      source.connect(processorNode);
+      processorNode.connect(silentGain);
+      silentGain.connect(audioContext.destination);
+
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+    }
+
+    let listeningActive = false;
+    let latestTranscript = '';
 
     const showOverlay = () => {
       const overlay = document.getElementById('response-overlay');
@@ -174,6 +304,31 @@
       const banner = document.getElementById('instruction-banner');
       banner.style.opacity = show ? '1' : '0';
       if (text) banner.textContent = text;
+    };
+
+    const setTranscriptPreview = (text, listening) => {
+      const panel = document.getElementById('transcript-preview');
+      const body = document.getElementById('transcript-text');
+      listeningActive = !!listening;
+      latestTranscript = text || '';
+
+      if (!listening) {
+        panel.classList.remove('visible');
+        body.textContent = '';
+        body.classList.add('empty');
+        return;
+      }
+
+      panel.classList.add('visible');
+      const trimmed = latestTranscript.trim();
+      if (trimmed) {
+        body.textContent = trimmed;
+        body.classList.remove('empty');
+      } else {
+        body.textContent = 'Listening for follow-up…';
+        body.classList.add('empty');
+      }
+      panel.scrollTop = panel.scrollHeight;
     };
 
     const handlers = {
@@ -203,6 +358,7 @@
       'hide-app': () => {
         updateBanner('', false);
         hideOverlay();
+        document.getElementById('transcript-preview').classList.remove('visible');
       },
 
       'show-app': () => {
@@ -215,34 +371,25 @@
         hideOverlay();
       },
 
+      'transcript-update': (event, payload) => {
+        const text = typeof payload === 'string' ? payload : payload?.text;
+        const listening = typeof payload === 'object' ? !!payload?.listening : true;
+        setTranscriptPreview(text, listening);
+      },
+
       'start-listening': async () => {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          audioChunks = [];
-          mediaRecorder = new MediaRecorder(stream);
-          mediaRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) audioChunks.push(e.data);
-          };
-          mediaRecorder.onstop = () => {
-            stream.getTracks().forEach(track => track.stop());
-            const blob = new Blob(audioChunks, { type: 'audio/webm' });
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              const base64Audio = reader.result.split(',')[1];
-              ipcRenderer.send('voice-audio', base64Audio);
-            };
-            reader.readAsDataURL(blob);
-          };
-          mediaRecorder.start();
+          await startAudioCapture();
+          setTranscriptPreview('', true);
         } catch (err) {
           updateBanner('Microphone access denied: ' + err.message, true);
+          ipcRenderer.send('listen-failed', err.message);
         }
       },
 
       'stop-listening': () => {
-        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-          mediaRecorder.stop();
-        }
+        stopAudioCapture();
+        setTranscriptPreview('', false);
       }
     };
 
@@ -251,12 +398,13 @@
     });
 
     window.addEventListener('unload', () => {
+      stopAudioCapture();
       Object.keys(handlers).forEach(channel => {
         ipcRenderer.removeAllListeners(channel);
       });
     });
 
-    updateBanner("Ctrl+Shift+S: Screenshot | Ctrl+Shift+A: Multi-mode | Ctrl+Shift+V: Voice | Ctrl+Shift+W: Hide Window | Ctrl+Shift+Q: Close");
+    updateBanner("Ctrl+Shift+V: Listen | Ctrl+Shift+Enter: Answer | Ctrl+Shift+S: Screenshot | Ctrl+Shift+A: Multi | Ctrl+Shift+W: Hide | Ctrl+Shift+Q: Quit");
   </script>
 </body>
 
