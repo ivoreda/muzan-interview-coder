@@ -67,6 +67,7 @@ class RealtimeSttSession {
     this.ready = false;
 
     ws.on('open', () => {
+      console.log('[stt] websocket open');
       ws.send(JSON.stringify({
         type: 'session.update',
         session: {
@@ -104,6 +105,7 @@ class RealtimeSttSession {
       if (event.type === 'session.updated' || event.type === 'transcription_session.updated') {
         this.ready = true;
         this.retryCount = 0;
+        console.log('[stt] session ready');
         return;
       }
 

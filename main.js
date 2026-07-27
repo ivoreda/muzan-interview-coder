@@ -39,6 +39,25 @@ const transcriptBuffer = new TranscriptBuffer(90000);
 
 const INSTRUCTIONS = "Ctrl+Shift+V: Listen | Ctrl+Shift+Enter: Answer | Ctrl+Shift+S: Screenshot | Ctrl+Shift+A: Multi | Ctrl+Shift+W: Hide | Ctrl+Shift+Q: Quit";
 
+function log(...args) {
+    const ts = new Date().toISOString().slice(11, 19);
+    console.log(`[${ts}]`, ...args);
+}
+
+function canSendToRenderer() {
+    return Boolean(
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        mainWindow.webContents &&
+        !mainWindow.webContents.isDestroyed()
+    );
+}
+
+function sendToRenderer(channel, ...args) {
+    if (!canSendToRenderer()) return;
+    mainWindow.webContents.send(channel, ...args);
+}
+
 function getPendingTranscript() {
     const committed = transcriptBuffer.getText();
     const partial = (partialTranscript || '').trim();
@@ -47,8 +66,7 @@ function getPendingTranscript() {
 }
 
 function pushTranscriptPreview() {
-    if (!mainWindow?.webContents) return;
-    mainWindow.webContents.send('transcript-update', {
+    sendToRenderer('transcript-update', {
         text: getPendingTranscript(),
         listening: isListening
     });
@@ -61,21 +79,18 @@ function clearTranscriptState() {
 }
 
 function updateInstruction(instruction) {
-    if (mainWindow?.webContents) {
-        mainWindow.webContents.send('update-instruction', instruction || INSTRUCTIONS);
-    }
+    sendToRenderer('update-instruction', instruction || INSTRUCTIONS);
 }
 
 function hideInstruction() {
-    if (mainWindow?.webContents) {
-        mainWindow.webContents.send('hide-instruction');
-    }
+    sendToRenderer('hide-instruction');
 }
 
 async function captureScreenshot() {
     try {
+        log('Screenshot: capturing…');
         hideInstruction();
-        mainWindow.hide();
+        if (canSendToRenderer()) mainWindow.hide();
         await new Promise(res => setTimeout(res, 200));
 
         const timestamp = Date.now();
@@ -85,30 +100,32 @@ async function captureScreenshot() {
         const imageBuffer = fs.readFileSync(imagePath);
         const base64Image = imageBuffer.toString('base64');
 
-        mainWindow.show();
+        if (canSendToRenderer()) mainWindow.show();
+        log('Screenshot: captured');
         return base64Image;
     } catch (err) {
-        mainWindow.show();
-        if (mainWindow.webContents) {
-            mainWindow.webContents.send('error', err.message);
-        }
+        if (canSendToRenderer()) mainWindow.show();
+        sendToRenderer('error', err.message);
         throw err;
     }
 }
 
 function showMainWindow() {
+    if (!canSendToRenderer()) return;
     mainWindow.show();
     if (stage == 2)
-        mainWindow.webContents.send('show-app');
+        sendToRenderer('show-app');
     else
         updateInstruction(isListening ? "Listening... Ctrl+Shift+V to stop | Ctrl+Shift+Enter: Answer" : INSTRUCTIONS);
     showWindow = true;
+    log('Window: shown');
 }
 
 function hideMainWindow() {
-    mainWindow.webContents.send('hide-app');
-    mainWindow.hide();
+    sendToRenderer('hide-app');
+    if (canSendToRenderer()) mainWindow.hide();
     showWindow = false;
+    log('Window: hidden');
 }
 
 function buildAnswerContent(transcript, images) {
@@ -148,17 +165,17 @@ async function runModel(contentParts) {
 
 async function processScreenshots() {
     try {
+        log('Answer: image-only solve…');
         const content = buildAnswerContent('', screenshots);
         const result = await runModel(content);
         screenshots = [];
         multiPageMode = false;
-        mainWindow.webContents.send('analysis-result', result);
+        sendToRenderer('analysis-result', result);
         stage = 2;
+        log('Answer: image-only done');
     } catch (err) {
         console.error("Error in processScreenshots:", err);
-        if (mainWindow.webContents) {
-            mainWindow.webContents.send('error', err.message);
-        }
+        sendToRenderer('error', err.message);
     }
 }
 
@@ -169,44 +186,50 @@ async function answerNow() {
     const images = [...screenshots];
 
     if (!transcript && images.length === 0) {
+        log('Answer: skipped (empty context)');
         updateInstruction("Nothing to answer yet");
         return;
     }
 
     answerInFlight = true;
     try {
+        log('Answer: thinking…', {
+            transcriptChars: transcript.length,
+            screenshots: images.length
+        });
         updateInstruction("Thinking...");
         const content = buildAnswerContent(transcript, images);
         const result = await runModel(content);
         screenshots = [];
         multiPageMode = false;
         clearTranscriptState();
-        mainWindow.webContents.send('analysis-result', result);
+        sendToRenderer('analysis-result', result);
         stage = 2;
         if (isListening) {
             updateInstruction("Listening... Ctrl+Shift+V to stop | Ctrl+Shift+Enter: Answer");
         }
+        log('Answer: done');
     } catch (err) {
         console.error("Error in answerNow:", err);
-        if (mainWindow.webContents) {
-            mainWindow.webContents.send('error', err.message);
-        }
+        sendToRenderer('error', err.message);
     } finally {
         answerInFlight = false;
     }
 }
 
-function stopListeningSession() {
+function stopListeningSession({ notifyRenderer = true } = {}) {
+    const wasListening = isListening || Boolean(sttSession);
     isListening = false;
     partialTranscript = '';
     if (sttSession) {
         sttSession.stop();
         sttSession = null;
     }
-    if (mainWindow?.webContents) {
-        mainWindow.webContents.send('stop-listening');
+    if (notifyRenderer) {
+        sendToRenderer('stop-listening');
+        pushTranscriptPreview();
     }
-    pushTranscriptPreview();
+    if (wasListening) log('Listen: stopped');
 }
 
 function startListeningSession() {
@@ -216,12 +239,15 @@ function startListeningSession() {
     }
 
     partialTranscript = '';
+    log('Listen: starting STT session…');
     sttSession = new RealtimeSttSession({
         apiKey: config.apiKey,
         model: config.sttModel || 'gpt-4o-mini-transcribe',
         onTranscript: (text) => {
             transcriptBuffer.append(text);
             pushTranscriptPreview();
+            const preview = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+            log('Transcript:', preview);
         },
         onPartial: (text) => {
             partialTranscript = text || '';
@@ -229,28 +255,27 @@ function startListeningSession() {
         },
         onError: (err) => {
             console.error("STT error:", err.message);
-            if (mainWindow?.webContents) {
-                mainWindow.webContents.send('update-instruction', `STT error: ${err.message}`);
-            }
+            log('STT error:', err.message);
+            sendToRenderer('update-instruction', `STT error: ${err.message}`);
         },
         onClose: () => {
             if (!isListening) return;
             isListening = false;
             sttSession = null;
             partialTranscript = '';
-            if (mainWindow?.webContents) {
-                mainWindow.webContents.send('stop-listening');
-                updateInstruction("Listening stopped (connection lost). " + INSTRUCTIONS);
-            }
+            sendToRenderer('stop-listening');
+            updateInstruction("Listening stopped (connection lost). " + INSTRUCTIONS);
             pushTranscriptPreview();
+            log('Listen: connection lost');
         }
     });
 
     isListening = true;
     sttSession.start();
-    mainWindow.webContents.send('start-listening');
+    sendToRenderer('start-listening');
     updateInstruction("Listening... Ctrl+Shift+V to stop | Ctrl+Shift+Enter: Answer");
     pushTranscriptPreview();
+    log('Listen: on');
 }
 
 function toggleListening() {
@@ -264,10 +289,11 @@ function toggleListening() {
 }
 
 function resetProcess() {
+    log('Reset');
     screenshots = [];
     multiPageMode = false;
     clearTranscriptState();
-    mainWindow.webContents.send('clear-result');
+    sendToRenderer('clear-result');
     updateInstruction(isListening
         ? "Listening... Ctrl+Shift+V to stop | Ctrl+Shift+Enter: Answer"
         : INSTRUCTIONS);
@@ -281,6 +307,7 @@ ipcMain.on('audio-chunk', (event, base64Pcm16) => {
 });
 
 ipcMain.on('listen-failed', (event, message) => {
+    log('Listen: mic failed —', message);
     stopListeningSession();
     clearTranscriptState();
     updateInstruction(`Microphone access denied: ${message}`);
@@ -311,6 +338,14 @@ function createWindow() {
     });
     mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     mainWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+
+    mainWindow.on('closed', () => {
+        log('Window: closed');
+        mainWindow = null;
+    });
+
+    log('App ready — model:', config.model, '| STT:', config.sttModel || 'gpt-4o-mini-transcribe');
+    log(INSTRUCTIONS);
 
     // Ctrl+Shift+S => image-only solve (or finalize multi-mode)
     globalShortcut.register('CommandOrControl+Shift+S', async () => {
@@ -366,8 +401,8 @@ function createWindow() {
 
     // Ctrl+Shift+Q => Quit the application
     globalShortcut.register('CommandOrControl+Shift+Q', () => {
-        console.log("Quitting application...");
-        stopListeningSession();
+        log('Quit requested');
+        stopListeningSession({ notifyRenderer: false });
         app.quit();
     });
 
@@ -398,7 +433,7 @@ function createWindow() {
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
-    stopListeningSession();
+    stopListeningSession({ notifyRenderer: false });
     globalShortcut.unregisterAll();
     if (process.platform !== 'darwin') {
         app.quit();
@@ -406,7 +441,8 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => {
-    stopListeningSession();
+    log('App quitting');
+    stopListeningSession({ notifyRenderer: false });
     globalShortcut.unregisterAll();
 });
 
