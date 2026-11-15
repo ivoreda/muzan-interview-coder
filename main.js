@@ -5,6 +5,7 @@ const fs = require('fs');
 const { OpenAI } = require('openai');
 const { TranscriptBuffer } = require('./transcriptBuffer');
 const { RealtimeSttSession } = require('./realtimeStt');
+const { uIOhook, UiohookKey } = require('uiohook-napi');
 
 let config;
 try {
@@ -100,11 +101,11 @@ async function captureScreenshot() {
         const imageBuffer = fs.readFileSync(imagePath);
         const base64Image = imageBuffer.toString('base64');
 
-        if (canSendToRenderer()) mainWindow.show();
+        if (canSendToRenderer()) mainWindow.showInactive();
         log('Screenshot: captured');
         return base64Image;
     } catch (err) {
-        if (canSendToRenderer()) mainWindow.show();
+        if (canSendToRenderer()) mainWindow.showInactive();
         sendToRenderer('error', err.message);
         throw err;
     }
@@ -112,7 +113,7 @@ async function captureScreenshot() {
 
 function showMainWindow() {
     if (!canSendToRenderer()) return;
-    mainWindow.show();
+    mainWindow.showInactive();
     if (stage == 2)
         sendToRenderer('show-app');
     else
@@ -130,7 +131,7 @@ function hideMainWindow() {
 
 function buildAnswerContent(transcript, images) {
     const parts = [];
-    let prompt = "Please answer the following interview question. Provide a complete answer, and ensure all code snippets are wrapped in standard markdown code blocks (e.g. ```javascript ... ```).";
+    let prompt = "Please answer the following interview question. Provide a complete answer. Unless the question explicitly requires a different language, write all code in JavaScript, and ensure all code snippets are wrapped in standard markdown code blocks (e.g. ```javascript ... ```).";
 
     if (transcript && images.length) {
         prompt += " Use both the spoken question/context and the screenshot(s). If the screenshots show code, troubleshoot or solve it as asked.";
@@ -140,7 +141,7 @@ function buildAnswerContent(transcript, images) {
     } else {
         parts.push({
             type: "text",
-            text: "Please solve or troubleshoot the problem shown in the screenshots. Provide the full solution, and crucially, ensure all code snippets are wrapped in standard markdown code blocks (e.g., ```javascript ... ```)."
+            text: "Please solve or troubleshoot the problem shown in the screenshots. Provide the full solution. Unless the screenshot explicitly shows a different language, write all code in JavaScript, and crucially, ensure all code snippets are wrapped in standard markdown code blocks (e.g., ```javascript ... ```)."
         });
     }
 
@@ -406,28 +407,76 @@ function createWindow() {
         app.quit();
     });
 
-    // Window Movement Shortcuts
-    const moveStep = 40;
+    // Window Movement — hold Cmd/Ctrl+Shift+Arrow to move continuously
+    startWindowMoveListener();
+}
 
-    globalShortcut.register('CommandOrControl+Shift+Up', () => {
-        const pos = mainWindow.getPosition();
-        mainWindow.setPosition(pos[0], pos[1] - moveStep);
+const MOVE_TICK_PX = 12;
+const MOVE_TICK_MS = 16; // ~60fps
+
+const ARROW_DELTAS = {
+    [UiohookKey.ArrowUp]: [0, -1],
+    [UiohookKey.ArrowDown]: [0, 1],
+    [UiohookKey.ArrowLeft]: [-1, 0],
+    [UiohookKey.ArrowRight]: [1, 0],
+};
+
+const moveModifierHeld = { primary: false, shift: false }; // primary = Cmd on mac, Ctrl elsewhere
+const moveIntervals = new Map(); // keycode -> interval id
+
+function isMoveModifierKey(keycode) {
+    if (process.platform === 'darwin') {
+        return keycode === UiohookKey.Meta || keycode === UiohookKey.MetaRight;
+    }
+    return keycode === UiohookKey.Ctrl || keycode === UiohookKey.CtrlRight;
+}
+
+function isShiftKey(keycode) {
+    return keycode === UiohookKey.Shift || keycode === UiohookKey.ShiftRight;
+}
+
+function stepWindow(dx, dy) {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const pos = mainWindow.getPosition();
+    mainWindow.setPosition(pos[0] + dx, pos[1] + dy);
+}
+
+function stopAllWindowMoves() {
+    for (const intervalId of moveIntervals.values()) clearInterval(intervalId);
+    moveIntervals.clear();
+}
+
+function startWindowMoveListener() {
+    uIOhook.on('keydown', (e) => {
+        if (isMoveModifierKey(e.keycode)) moveModifierHeld.primary = true;
+        if (isShiftKey(e.keycode)) moveModifierHeld.shift = true;
+
+        const delta = ARROW_DELTAS[e.keycode];
+        if (!delta || !moveModifierHeld.primary || !moveModifierHeld.shift) return;
+        if (moveIntervals.has(e.keycode)) return; // already moving from key auto-repeat
+
+        stepWindow(delta[0] * MOVE_TICK_PX, delta[1] * MOVE_TICK_PX);
+        moveIntervals.set(e.keycode, setInterval(() => {
+            stepWindow(delta[0] * MOVE_TICK_PX, delta[1] * MOVE_TICK_PX);
+        }, MOVE_TICK_MS));
     });
 
-    globalShortcut.register('CommandOrControl+Shift+Down', () => {
-        const pos = mainWindow.getPosition();
-        mainWindow.setPosition(pos[0], pos[1] + moveStep);
+    uIOhook.on('keyup', (e) => {
+        if (isMoveModifierKey(e.keycode)) {
+            moveModifierHeld.primary = false;
+            stopAllWindowMoves();
+        }
+        if (isShiftKey(e.keycode)) {
+            moveModifierHeld.shift = false;
+            stopAllWindowMoves();
+        }
+        if (moveIntervals.has(e.keycode)) {
+            clearInterval(moveIntervals.get(e.keycode));
+            moveIntervals.delete(e.keycode);
+        }
     });
 
-    globalShortcut.register('CommandOrControl+Shift+Left', () => {
-        const pos = mainWindow.getPosition();
-        mainWindow.setPosition(pos[0] - moveStep, pos[1]);
-    });
-
-    globalShortcut.register('CommandOrControl+Shift+Right', () => {
-        const pos = mainWindow.getPosition();
-        mainWindow.setPosition(pos[0] + moveStep, pos[1]);
-    });
+    uIOhook.start();
 }
 
 app.whenReady().then(createWindow);
@@ -444,6 +493,8 @@ app.on('will-quit', () => {
     log('App quitting');
     stopListeningSession({ notifyRenderer: false });
     globalShortcut.unregisterAll();
+    stopAllWindowMoves();
+    uIOhook.stop();
 });
 
 app.on('activate', () => {
