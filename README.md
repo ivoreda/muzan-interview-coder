@@ -4,19 +4,22 @@ A powerful tool designed to help solve coding problems by capturing screenshots 
 
 ## Setup
 
-To use this program, you need to create a `config.json` file in the project root with your OpenAI API credentials:
+1. Install dependencies with `npm install`, then launch with `npm start`.
+2. On first launch, enter your own OpenAI API key in the setup screen.
+3. Use **API key settings** in the bottom-left corner to replace the key later. Changing it stops live listening and clears the pending transcript.
 
-1. Create a file named `config.json` in the root directory.
-2. Add the following content, replacing `OPEN_AI_API_KEY` with your actual key:
+The key is encrypted with Electron's OS-backed `safeStorage` and saved in the app's user-data directory as `api-key.enc`. It is never loaded from `config.json`. If secure storage is unavailable, saving is disabled. API usage is billed to the key owner's OpenAI account. Saving checks the key's format; API authentication happens when you use answers or transcription.
+
+`config.json` is optional and only controls model preferences:
 
 ```json
 {
-  "apiKey": "OPEN_AI_API_KEY",
-  "model": "gpt-5-nano"
+  "model": "gpt-4o-mini",
+  "sttModel": "gpt-4o-mini-transcribe"
 }
 ```
 
-Optional: set `"sttModel": "gpt-4o-mini-transcribe"` (default) for live speech-to-text.
+These are also the defaults when no config file exists.
 
 ## Usage
 

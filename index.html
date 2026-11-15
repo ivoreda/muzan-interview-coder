@@ -181,10 +181,29 @@
       border-left: 4px solid #ff4444;
       margin: 10px 0;
     }
+    #key-settings-button { position: fixed; bottom: 8px; left: 8px; z-index: 10003; -webkit-app-region: no-drag; }
+    #key-settings { position: fixed; inset: 0; z-index: 10004; background: rgba(15,15,15,.98); color: white; padding: 60px 32px; box-sizing: border-box; -webkit-app-region: no-drag; }
+    #key-settings[hidden] { display: none; }
+    #key-settings input { display: block; width: 100%; box-sizing: border-box; padding: 12px; margin: 20px 0; }
+    #key-settings button { padding: 10px 16px; cursor: pointer; }
+    #key-error { color: #ff9090; }
   </style>
 </head>
 
 <body>
+  <button id="key-settings-button" type="button">API key settings</button>
+  <section id="key-settings" role="dialog" aria-modal="true" aria-labelledby="key-title" hidden>
+    <h1 id="key-title">Connect your OpenAI account</h1>
+    <p>Enter your own OpenAI API key to enable answers and live transcription. API usage is billed to your OpenAI account.</p>
+    <p>Your key is encrypted on this computer using the operating system's secure storage.</p>
+    <form id="key-form">
+      <label for="api-key">OpenAI API key</label>
+      <input id="api-key" type="password" placeholder="sk-…" autocomplete="off" spellcheck="false" required />
+      <p id="key-error" role="alert"></p>
+      <button id="save-key" type="submit">Save API key</button>
+      <button id="cancel-key" type="button" hidden>Cancel</button>
+    </form>
+  </section>
   <div id="instruction-banner"></div>
   <div id="transcript-preview" aria-live="polite">
     <div class="label">Transcript (sent on Answer)</div>
@@ -197,6 +216,46 @@
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script>
     const { ipcRenderer } = require('electron');
+
+    let keyConfigured = false;
+    const keyDialog = document.getElementById('key-settings');
+    const keyInput = document.getElementById('api-key');
+    function openKeySettings() {
+      keyInput.value = '';
+      document.getElementById('key-error').textContent = '';
+      document.getElementById('cancel-key').hidden = !keyConfigured;
+      keyDialog.hidden = false;
+      keyInput.focus();
+    }
+    ipcRenderer.on('open-api-key-settings', openKeySettings);
+    document.getElementById('key-settings-button').onclick = openKeySettings;
+    document.getElementById('cancel-key').onclick = () => {
+      keyInput.value = '';
+      keyDialog.hidden = true;
+    };
+    document.getElementById('key-form').onsubmit = async (event) => {
+      event.preventDefault();
+      const button = document.getElementById('save-key');
+      button.disabled = true;
+      try {
+        const result = await ipcRenderer.invoke('save-api-key', keyInput.value);
+        if (result.error) {
+          document.getElementById('key-error').textContent = result.error;
+        } else {
+          keyConfigured = true;
+          keyInput.value = '';
+          keyDialog.hidden = true;
+        }
+      } catch (_) {
+        document.getElementById('key-error').textContent = 'Could not save the API key. Please try again.';
+      } finally {
+        button.disabled = false;
+      }
+    };
+    ipcRenderer.invoke('api-key-status').then(({ configured }) => {
+      keyConfigured = configured;
+      if (!configured) openKeySettings();
+    });
 
     let mediaStream = null;
     let audioContext = null;

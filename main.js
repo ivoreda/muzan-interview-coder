@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, safeStorage } = require('electron');
 const path = require('path');
 const screenshot = require('screenshot-desktop');
 const fs = require('fs');
@@ -6,25 +6,59 @@ const { OpenAI } = require('openai');
 const { TranscriptBuffer } = require('./transcriptBuffer');
 const { RealtimeSttSession } = require('./realtimeStt');
 
-let config;
+// config.json is optional and only supplies model preferences, never credentials.
+let config = { model: 'gpt-4o-mini' };
 try {
-    const configPath = path.join(__dirname, 'config.json');
-    const configData = fs.readFileSync(configPath, 'utf8');
-    config = JSON.parse(configData);
-
-    if (!config.apiKey) {
-        throw new Error("API key is missing in config.json");
-    }
-
-    if (!config.model) {
-        config.model = "gpt-4o-mini";
-        console.log("Model not specified in config, using default:", config.model);
-    }
+    const preferences = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
+    config.model = preferences.model || config.model;
+    config.sttModel = preferences.sttModel;
 } catch (err) {
-    console.error("Error reading config:", err.message);
-    process.exit(1);
+    if (err.code !== 'ENOENT') console.warn('Could not load model preferences; using defaults.');
 }
-const openai = new OpenAI({ apiKey: config.apiKey });
+let apiKey = '';
+let openai = null;
+const keyPath = () => path.join(app.getPath('userData'), 'api-key.enc');
+
+function loadApiKey() {
+    try {
+        if (safeStorage.isEncryptionAvailable() && fs.existsSync(keyPath())) {
+            apiKey = safeStorage.decryptString(fs.readFileSync(keyPath()));
+            openai = new OpenAI({ apiKey });
+        }
+    } catch (_) {
+        console.warn('Saved API key could not be read. Enter it again in API key settings.');
+    }
+}
+
+function requireApiKey() {
+    if (openai) return true;
+    showMainWindow();
+    sendToRenderer('open-api-key-settings');
+    return false;
+}
+
+ipcMain.handle('api-key-status', () => ({ configured: Boolean(apiKey) }));
+ipcMain.handle('save-api-key', (_event, value) => {
+    const key = typeof value === 'string' ? value.trim() : '';
+    if (!/^sk-[A-Za-z0-9_-]+$/.test(key)) {
+        return { error: 'Enter a valid OpenAI API key starting with sk-.' };
+    }
+    if (!safeStorage.isEncryptionAvailable()) {
+        return { error: 'Secure key storage is unavailable on this computer.' };
+    }
+    try {
+        fs.mkdirSync(app.getPath('userData'), { recursive: true });
+        fs.writeFileSync(keyPath(), safeStorage.encryptString(key), { mode: 0o600 });
+        stopListeningSession();
+        clearTranscriptState();
+        apiKey = key;
+        openai = new OpenAI({ apiKey });
+        updateInstruction(INSTRUCTIONS);
+        return { configured: true };
+    } catch (_) {
+        return { error: 'Could not securely save the API key. Please try again.' };
+    }
+});
 
 let mainWindow;
 let screenshots = [];
@@ -155,6 +189,7 @@ function buildAnswerContent(transcript, images) {
 }
 
 async function runModel(contentParts) {
+    if (!openai) throw new Error('Add your OpenAI API key in settings first.');
     const response = await openai.chat.completions.create({
         model: config.model,
         messages: [{ role: "user", content: contentParts }],
@@ -180,6 +215,7 @@ async function processScreenshots() {
 }
 
 async function answerNow() {
+    if (!requireApiKey()) return;
     if (answerInFlight) return;
 
     const transcript = getPendingTranscript();
@@ -233,6 +269,7 @@ function stopListeningSession({ notifyRenderer = true } = {}) {
 }
 
 function startListeningSession() {
+    if (!requireApiKey()) return;
     if (sttSession) {
         sttSession.stop();
         sttSession = null;
@@ -241,7 +278,7 @@ function startListeningSession() {
     partialTranscript = '';
     log('Listen: starting STT session…');
     sttSession = new RealtimeSttSession({
-        apiKey: config.apiKey,
+        apiKey,
         model: config.sttModel || 'gpt-4o-mini-transcribe',
         onTranscript: (text) => {
             transcriptBuffer.append(text);
@@ -350,6 +387,7 @@ function createWindow() {
     // Ctrl+Shift+S => image-only solve (or finalize multi-mode)
     globalShortcut.register('CommandOrControl+Shift+S', async () => {
         try {
+            if (!requireApiKey()) return;
             const img = await captureScreenshot();
             screenshots.push(img);
             await processScreenshots();
@@ -361,6 +399,7 @@ function createWindow() {
     // Ctrl+Shift+A => multi-page mode (capture without solving)
     globalShortcut.register('CommandOrControl+Shift+A', async () => {
         try {
+            if (!requireApiKey()) return;
             if (!multiPageMode) {
                 multiPageMode = true;
                 updateInstruction("Multi-mode: Ctrl+Shift+A to add, Ctrl+Shift+Enter to answer (or Ctrl+Shift+S for image-only)");
@@ -430,7 +469,10 @@ function createWindow() {
     });
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+    loadApiKey();
+    createWindow();
+});
 
 app.on('window-all-closed', () => {
     stopListeningSession({ notifyRenderer: false });
