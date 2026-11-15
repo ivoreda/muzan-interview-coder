@@ -5,10 +5,14 @@ A powerful tool designed to help solve coding problems by capturing screenshots 
 ## Setup
 
 1. Install dependencies with `npm install`, then launch with `npm start`.
-2. On first launch, enter your own OpenAI API key in the setup screen.
-3. Use **API key settings** in the bottom-left corner to replace the key later. Changing it stops live listening and clears the pending transcript.
+2. On first launch, choose OpenAI, Anthropic, or OpenRouter, enter a model ID and your API key, then save.
+3. Use **API key settings** in the bottom-left corner to change providers, models, or keys later. Each provider keeps its own saved key; leave the key field blank to reuse it. Changing it stops live listening and clears the pending transcript.
 
-The key is encrypted with Electron's OS-backed `safeStorage` and saved in the app's user-data directory as `api-key.enc`. It is never loaded from `config.json`. If secure storage is unavailable, saving is disabled. API usage is billed to the key owner's OpenAI account. Saving checks the key's format; API authentication happens when you use answers or transcription.
+Provider keys and settings are encrypted with Electron's OS-backed `safeStorage` and saved in the app's user-data directory as `api-key.enc`. Keys are never loaded from `config.json`. If secure storage is unavailable, saving is disabled. API usage is billed by the selected provider. Saving checks required fields; authentication and model access are checked when making requests. Existing OpenAI-only saved keys are loaded automatically.
+
+Screenshot answers work with all three providers when the selected model supports images. Model IDs are editable, including OpenRouter IDs such as `openai/gpt-4o-mini`.
+
+**Live transcription still uses OpenAI.** Save an OpenAI key first to enable listening, then select any answer provider. Anthropic and OpenRouter keys are never sent to OpenAI. Without an OpenAI key, screenshot answers still work; listening prompts you to configure one.
 
 `config.json` is optional and only controls model preferences:
 
@@ -47,3 +51,5 @@ Once the application is running, you can use the following global shortcuts:
 3. For spoken questions: after the interviewer asks, press **Ctrl+Shift+Enter**.
 4. For on-screen problems or code to troubleshoot: **Ctrl+Shift+A** (or **S** for image-only solve). To fuse speech + screen, capture with **A**, then **Enter**.
 5. The AI displays the solution in the overlay window.
+
+Provider API references: [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create), [OpenRouter Chat Completions](https://openrouter.ai/docs/api/reference/overview).

@@ -2,7 +2,7 @@ const { app, BrowserWindow, globalShortcut, ipcMain, safeStorage } = require('el
 const path = require('path');
 const screenshot = require('screenshot-desktop');
 const fs = require('fs');
-const { OpenAI } = require('openai');
+const { PROVIDERS, generateAnswer } = require('./providers');
 const { TranscriptBuffer } = require('./transcriptBuffer');
 const { RealtimeSttSession } = require('./realtimeStt');
 const { uIOhook, UiohookKey } = require('uiohook-napi');
@@ -16,48 +16,67 @@ try {
 } catch (err) {
     if (err.code !== 'ENOENT') console.warn('Could not load model preferences; using defaults.');
 }
-let apiKey = '';
-let openai = null;
+let providerSettings = { provider: 'openai', profiles: {} };
 const keyPath = () => path.join(app.getPath('userData'), 'api-key.enc');
 
 function loadApiKey() {
     try {
         if (safeStorage.isEncryptionAvailable() && fs.existsSync(keyPath())) {
-            apiKey = safeStorage.decryptString(fs.readFileSync(keyPath()));
-            openai = new OpenAI({ apiKey });
+            const stored = safeStorage.decryptString(fs.readFileSync(keyPath()));
+            // Preserve keys saved by the original OpenAI-only setup.
+            if (stored.startsWith('sk-')) {
+                providerSettings.profiles.openai = { key: stored, model: config.model };
+            } else {
+                const parsed = JSON.parse(stored);
+                if (!Object.hasOwn(PROVIDERS, parsed.provider) || !parsed.profiles) throw new Error('Invalid settings');
+                providerSettings = parsed;
+            }
         }
     } catch (_) {
-        console.warn('Saved API key could not be read. Enter it again in API key settings.');
+        console.warn('Saved provider settings could not be read. Configure your provider again.');
     }
 }
 
 function requireApiKey() {
-    if (openai) return true;
+    if (providerSettings.profiles[providerSettings.provider]?.key) return true;
     showMainWindow();
     sendToRenderer('open-api-key-settings');
     return false;
 }
 
-ipcMain.handle('api-key-status', () => ({ configured: Boolean(apiKey) }));
+function settingsStatus() {
+    return {
+        configured: Boolean(providerSettings.profiles[providerSettings.provider]?.key),
+        provider: providerSettings.provider,
+        profiles: Object.fromEntries(Object.entries(PROVIDERS).map(([id, definition]) => [id, {
+            configured: Boolean(providerSettings.profiles[id]?.key),
+            model: providerSettings.profiles[id]?.model || (id === 'openai' ? config.model : definition.model)
+        }]))
+    };
+}
+ipcMain.handle('api-key-status', settingsStatus);
 ipcMain.handle('save-api-key', (_event, value) => {
-    const key = typeof value === 'string' ? value.trim() : '';
-    if (!/^sk-[A-Za-z0-9_-]+$/.test(key)) {
-        return { error: 'Enter a valid OpenAI API key starting with sk-.' };
-    }
-    if (!safeStorage.isEncryptionAvailable()) {
-        return { error: 'Secure key storage is unavailable on this computer.' };
-    }
+    if (!value || !Object.hasOwn(PROVIDERS, value.provider)) return { error: 'Choose a supported provider.' };
+    const key = typeof value.key === 'string' ? value.key.trim() : '';
+    const model = typeof value.model === 'string' ? value.model.trim() : '';
+    if (!model || model.length > 200 || /\s/.test(model)) return { error: 'Enter a valid model ID.' };
+    if (key && (key.length > 4096 || /\s/.test(key))) return { error: 'Enter a valid API key without spaces.' };
+    const existing = providerSettings.profiles[value.provider]?.key;
+    if (!key && !existing) return { error: 'Enter an API key for this provider.' };
+    if (!safeStorage.isEncryptionAvailable()) return { error: 'Secure key storage is unavailable on this computer.' };
+    const next = { provider: value.provider, profiles: {
+        ...providerSettings.profiles, [value.provider]: { key: key || existing, model }
+    }};
     try {
         fs.mkdirSync(app.getPath('userData'), { recursive: true });
-        fs.writeFileSync(keyPath(), safeStorage.encryptString(key), { mode: 0o600 });
+        fs.writeFileSync(keyPath(), safeStorage.encryptString(JSON.stringify(next)), { mode: 0o600 });
         stopListeningSession();
         clearTranscriptState();
-        apiKey = key;
-        openai = new OpenAI({ apiKey });
+        providerSettings = next;
         updateInstruction(INSTRUCTIONS);
-        return { configured: true };
+        return settingsStatus();
     } catch (_) {
-        return { error: 'Could not securely save the API key. Please try again.' };
+        return { error: 'Could not securely save provider settings. Please try again.' };
     }
 });
 
@@ -190,13 +209,8 @@ function buildAnswerContent(transcript, images) {
 }
 
 async function runModel(contentParts) {
-    if (!openai) throw new Error('Add your OpenAI API key in settings first.');
-    const response = await openai.chat.completions.create({
-        model: config.model,
-        messages: [{ role: "user", content: contentParts }],
-        max_completion_tokens: 5000
-    });
-    return response.choices[0].message.content;
+    const { provider, profiles } = providerSettings;
+    return generateAnswer(provider, profiles[provider], contentParts);
 }
 
 async function processScreenshots() {
@@ -270,7 +284,12 @@ function stopListeningSession({ notifyRenderer = true } = {}) {
 }
 
 function startListeningSession() {
-    if (!requireApiKey()) return;
+    if (!providerSettings.profiles.openai?.key) {
+        showMainWindow();
+        sendToRenderer('open-api-key-settings');
+        updateInstruction('Live transcription needs an OpenAI key. Add one in settings; answers can use any provider.');
+        return;
+    }
     if (sttSession) {
         sttSession.stop();
         sttSession = null;
@@ -279,7 +298,7 @@ function startListeningSession() {
     partialTranscript = '';
     log('Listen: starting STT session…');
     sttSession = new RealtimeSttSession({
-        apiKey,
+        apiKey: providerSettings.profiles.openai.key,
         model: config.sttModel || 'gpt-4o-mini-transcribe',
         onTranscript: (text) => {
             transcriptBuffer.append(text);
