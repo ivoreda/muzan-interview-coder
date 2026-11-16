@@ -1,8 +1,8 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, nativeImage, clipboard, dialog, screen } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, nativeImage, clipboard, dialog, screen, safeStorage } = require('electron');
 const path = require('path');
 const screenshot = require('screenshot-desktop');
 const fs = require('fs');
-const { OpenAI } = require('openai');
+const { PROVIDERS, generateAnswer } = require('./providers');
 const { TranscriptBuffer } = require('./transcriptBuffer');
 const { RealtimeSttSession } = require('./realtimeStt');
 const { uIOhook, UiohookKey } = require('uiohook-napi');
@@ -49,19 +49,9 @@ function loadConfig() {
         }
     }
 
-    const apiKey = fileConfig.apiKey || process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-        fatalConfigError(
-            'No OpenAI API key found.\n\nCreate config.json in the project folder with:\n' +
-            '{ "apiKey": "sk-...", "model": "gpt-4o-mini" }\n\nor set the OPENAI_API_KEY environment variable.'
-        );
-        return null;
-    }
-
     const model = fileConfig.model || 'gpt-4o-mini';
     const reasoning = isReasoningModel(model);
     return {
-        apiKey,
         model,
         reasoning,
         // Reasoning tokens count toward the completion budget, so give reasoning models more room.
@@ -79,7 +69,74 @@ function loadConfig() {
 }
 
 const config = loadConfig();
-const openai = config ? new OpenAI({ apiKey: config.apiKey }) : null;
+
+
+let providerSettings = { provider: 'openai', profiles: {} };
+const keyPath = () => path.join(app.getPath('userData'), 'api-key.enc');
+
+function loadApiKey() {
+    try {
+        if (safeStorage.isEncryptionAvailable() && fs.existsSync(keyPath())) {
+            const stored = safeStorage.decryptString(fs.readFileSync(keyPath()));
+            // Preserve keys saved by the original OpenAI-only setup.
+            if (stored.startsWith('sk-')) {
+                providerSettings.profiles.openai = { key: stored, model: config.model };
+            } else {
+                const parsed = JSON.parse(stored);
+                if (!Object.hasOwn(PROVIDERS, parsed.provider) || !parsed.profiles) throw new Error('Invalid settings');
+                providerSettings = parsed;
+            }
+        }
+    } catch (_) {
+        console.warn('Saved provider settings could not be read. Configure your provider again.');
+    }
+}
+
+function requireApiKey() {
+    if (providerSettings.profiles[providerSettings.provider]?.key) return true;
+    showMainWindow();
+    sendToRenderer('open-api-key-settings');
+    return false;
+}
+
+function settingsStatus() {
+    return {
+        configured: Boolean(providerSettings.profiles[providerSettings.provider]?.key),
+        provider: providerSettings.provider,
+        profiles: Object.fromEntries(Object.entries(PROVIDERS).map(([id, definition]) => [id, {
+            configured: Boolean(providerSettings.profiles[id]?.key),
+            model: providerSettings.profiles[id]?.model || (id === 'openai' ? config.model : definition.model)
+        }]))
+    };
+}
+ipcMain.handle('api-key-status', settingsStatus);
+ipcMain.handle('save-api-key', (_event, value) => {
+    if (!value || !Object.hasOwn(PROVIDERS, value.provider)) return { error: 'Choose a supported provider.' };
+    const key = typeof value.key === 'string' ? value.key.trim() : '';
+    const model = typeof value.model === 'string' ? value.model.trim() : '';
+    if (!model || model.length > 200 || /\s/.test(model)) return { error: 'Enter a valid model ID.' };
+    if (key && (key.length > 4096 || /\s/.test(key))) return { error: 'Enter a valid API key without spaces.' };
+    const existing = providerSettings.profiles[value.provider]?.key;
+    if (!key && !existing) return { error: 'Enter an API key for this provider.' };
+    if (!safeStorage.isEncryptionAvailable()) return { error: 'Secure key storage is unavailable on this computer.' };
+    const next = { provider: value.provider, profiles: {
+        ...providerSettings.profiles, [value.provider]: { key: key || existing, model }
+    }};
+    try {
+        fs.mkdirSync(app.getPath('userData'), { recursive: true });
+        fs.writeFileSync(keyPath(), safeStorage.encryptString(JSON.stringify(next)), { mode: 0o600 });
+        stopListeningSession();
+        clearTranscriptState();
+        providerSettings = next;
+        if (currentAbort) currentAbort.abort();
+        history = [];
+        updateInstruction();
+        return settingsStatus();
+    } catch (_) {
+        return { error: 'Could not securely save provider settings. Please try again.' };
+    }
+});
+
 
 // ---------- State ----------
 
@@ -259,31 +316,16 @@ function buildMessages(userText, images) {
 }
 
 async function streamModel(messages, signal, onDelta) {
-    const params = {
-        model: config.model,
-        messages,
-        stream: true,
-        max_completion_tokens: config.maxTokens
-    };
-    if (config.reasoning && config.reasoningEffort) params.reasoning_effort = config.reasoningEffort;
-
-    const stream = await openai.chat.completions.create(params, { signal });
-    let text = '';
-    let finishReason = null;
-    for await (const chunk of stream) {
-        const choice = chunk.choices && chunk.choices[0];
-        if (!choice) continue;
-        const delta = choice.delta && choice.delta.content;
-        if (delta) {
-            text += delta;
-            onDelta(delta);
-        }
-        if (choice.finish_reason) finishReason = choice.finish_reason;
-    }
-    return { text, finishReason };
+    const { provider, profiles } = providerSettings;
+    return generateAnswer(provider, profiles[provider], [], fetch, {
+        messages, signal, onDelta,
+        maxTokens: config.maxTokens,
+        reasoningEffort: config.reasoningEffort
+    });
 }
 
 async function answerNow({ imagesOnly = false } = {}) {
+    if (!requireApiKey()) return;
     if (answerInFlight) {
         flashInstruction(`Still answering… ${key('reset')} to cancel`);
         return;
@@ -395,6 +437,12 @@ function stopListeningSession({ notifyRenderer = true } = {}) {
 }
 
 function startListeningSession() {
+    if (!providerSettings.profiles.openai?.key) {
+        showMainWindow();
+        sendToRenderer('open-api-key-settings');
+        flashInstruction('Live transcription needs an OpenAI key. Save one in API key settings.', 5000);
+        return;
+    }
     if (sttSession) {
         sttSession.stop();
         sttSession = null;
@@ -404,7 +452,7 @@ function startListeningSession() {
     consumedItemIds.clear();
     log('Listen: starting STT session…');
     sttSession = new RealtimeSttSession({
-        apiKey: config.apiKey,
+        apiKey: providerSettings.profiles.openai.key,
         model: config.sttModel,
         language: config.language,
         onTranscript: (text, itemId) => {
@@ -571,6 +619,7 @@ function createWindow() {
 // ---------- Shortcuts ----------
 
 async function onScreenshotSolve() {
+    if (!requireApiKey()) return;
     if (answerInFlight) {
         flashInstruction(`Still answering… ${key('reset')} to cancel`);
         return;
@@ -587,6 +636,7 @@ async function onScreenshotSolve() {
 }
 
 async function onMultiCapture() {
+    if (!requireApiKey()) return;
     try {
         multiPageMode = true;
         screenshots.push(await captureScreenshot());
@@ -709,6 +759,7 @@ function startWindowMoveListener() {
 
 if (config) {
     app.whenReady().then(() => {
+        loadApiKey();
         log('App ready — model:', config.model,
             config.reasoning ? `(reasoning: ${config.reasoningEffort || 'default'})` : '',
             '| STT:', config.sttModel);

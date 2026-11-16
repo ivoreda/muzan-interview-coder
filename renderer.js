@@ -1,6 +1,65 @@
 /* global marked, DOMPurify, hljs */
 (() => {
   const api = window.muzan;
+    let keyConfigured = false;
+    let providerStatus = null;
+    const providerSelect = document.getElementById('provider');
+    const modelInput = document.getElementById('model');
+    function updateProviderForm() {
+      const profile = providerStatus?.profiles[providerSelect.value];
+      modelInput.value = profile?.model || '';
+      keyInput.value = '';
+      document.getElementById('saved-key-note').textContent = profile?.configured
+        ? 'A key is saved for this provider. Leave the key blank to keep it.' : 'Enter a key for this provider.';
+    }
+    providerSelect.onchange = updateProviderForm;
+    const keyDialog = document.getElementById('key-settings');
+    const keyInput = document.getElementById('api-key');
+    async function openKeySettings() {
+      try {
+        providerStatus = await api.keyStatus();
+      } catch (_) { return; }
+      keyConfigured = providerStatus.configured;
+      providerSelect.value = providerStatus.provider;
+      updateProviderForm();
+      keyInput.value = '';
+      document.getElementById('key-error').textContent = '';
+      document.getElementById('cancel-key').hidden = !keyConfigured;
+      keyDialog.hidden = false;
+      keyInput.focus();
+    }
+    api.on('open-api-key-settings', openKeySettings);
+    document.getElementById('key-settings-button').onclick = openKeySettings;
+    document.getElementById('cancel-key').onclick = () => {
+      keyInput.value = '';
+      keyDialog.hidden = true;
+    };
+    document.getElementById('key-form').onsubmit = async (event) => {
+      event.preventDefault();
+      const button = document.getElementById('save-key');
+      button.disabled = true;
+      try {
+        const result = await api.saveKey( { provider: providerSelect.value, key: keyInput.value, model: modelInput.value });
+        if (result.error) {
+          document.getElementById('key-error').textContent = result.error;
+        } else {
+          providerStatus = result;
+          keyConfigured = true;
+          keyInput.value = '';
+          keyDialog.hidden = true;
+        }
+      } catch (_) {
+        document.getElementById('key-error').textContent = 'Could not save the API key. Please try again.';
+      } finally {
+        button.disabled = false;
+      }
+    };
+    api.keyStatus().then(({ configured }) => {
+      keyConfigured = configured;
+      if (!configured) openKeySettings();
+    });
+
+
 
   const $ = (id) => document.getElementById(id);
   const banner = $('instruction-banner');

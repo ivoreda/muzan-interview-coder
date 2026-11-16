@@ -244,10 +244,36 @@
       border-left: 4px solid #ff4444;
       margin: 10px 0;
     }
+    #key-settings-button { position: fixed; bottom: 8px; left: 8px; z-index: 10003; -webkit-app-region: no-drag; }
+    #key-settings { position: fixed; inset: 0; z-index: 10004; background: rgba(15,15,15,.98); color: white; padding: 28px 32px; overflow-y: auto; box-sizing: border-box; -webkit-app-region: no-drag; }
+    #key-settings[hidden] { display: none; }
+    #key-settings input, #key-settings select { display: block; width: 100%; box-sizing: border-box; padding: 12px; margin: 20px 0; }
+    #key-settings button { padding: 10px 16px; cursor: pointer; }
+    #key-error { color: #ff9090; }
   </style>
 </head>
 
 <body>
+  <button id="key-settings-button" type="button">API key settings</button>
+  <section id="key-settings" role="dialog" aria-modal="true" aria-labelledby="key-title" hidden>
+    <h1 id="key-title">Choose your AI provider</h1>
+    <p>Use your own OpenAI, Anthropic, or OpenRouter key for answers. Usage is billed by the selected provider.</p>
+    <p>Your key is encrypted on this computer using the operating system's secure storage.</p>
+    <form id="key-form">
+      <label for="provider">Answer provider</label>
+      <select id="provider"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="openrouter">OpenRouter</option></select>
+      <label for="model">Model ID</label>
+      <input id="model" type="text" required spellcheck="false" />
+      <p>Choose a model that supports images for screenshots. OpenRouter IDs include the provider prefix.</p>
+      <label for="api-key">API key</label>
+      <input id="api-key" type="password" placeholder="Enter provider API key" autocomplete="off" spellcheck="false" />
+      <p id="saved-key-note"></p>
+      <p>Live listening requires a saved OpenAI key, even when another provider answers. Save OpenAI first, then switch providers.</p>
+      <p id="key-error" role="alert"></p>
+      <button id="save-key" type="submit">Save API key</button>
+      <button id="cancel-key" type="button" hidden>Cancel</button>
+    </form>
+  </section>
   <div id="instruction-banner"></div>
   <div id="transcript-preview" aria-live="polite">
     <div class="label">Transcript (sent on Answer)</div>
@@ -265,6 +291,7 @@
   <script src="node_modules/dompurify/dist/purify.min.js"></script>
   <script src="node_modules/@highlightjs/cdn-assets/highlight.min.js"></script>
   <script src="renderer.js"></script>
+
 </body>
 
 </html>

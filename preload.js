@@ -3,6 +3,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 const RECEIVE_CHANNELS = new Set([
+  'open-api-key-settings',
   'answer-start',
   'answer-delta',
   'answer-done',
@@ -19,6 +20,8 @@ const RECEIVE_CHANNELS = new Set([
 ]);
 
 contextBridge.exposeInMainWorld('muzan', {
+  keyStatus: () => ipcRenderer.invoke('api-key-status'),
+  saveKey: (value) => ipcRenderer.invoke('save-api-key', value),
   on(channel, callback) {
     if (!RECEIVE_CHANNELS.has(channel)) throw new Error(`Unknown channel: ${channel}`);
     ipcRenderer.on(channel, (_event, ...args) => callback(...args));
