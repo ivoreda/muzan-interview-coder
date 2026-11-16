@@ -26,8 +26,23 @@ async function generateAnswer(provider, profile, content, request = fetch) {
         }),
         signal: AbortSignal.timeout(120000)
     });
-    // Do not surface raw upstream errors, which may echo credentials or input.
-    if (!response.ok) throw new Error(`${definition.name} request failed (HTTP ${response.status}). Check your key, model access, credits, and image support in settings.`);
+    if (!response.ok) {
+        // Classify known errors without exposing upstream messages, credentials, or input.
+        let error;
+        try { error = (await response.json())?.error; } catch { /* Non-JSON error response. */ }
+        const prefix = `${definition.name} request failed (HTTP ${response.status}).`;
+        if (response.status === 429) {
+            const codes = [error?.code, error?.type];
+            if (codes.some(code => ['insufficient_quota', 'credit_balance_exhausted', 'billing_hard_limit_reached', 'usage_limit_reached'].includes(code))) {
+                throw new Error(`${prefix} API credits or usage quota exhausted. Check API billing, credit balance, and project usage limits for this key. Retrying will not resolve a billing limit.`);
+            }
+            if (codes.some(code => ['rate_limit_exceeded', 'rate_limit_error', 'slow_down'].includes(code))) {
+                throw new Error(`${prefix} API rate limit reached. Wait before trying again, reduce request frequency or screenshot count, or check your API rate limits.`);
+            }
+            throw new Error(`${prefix} The provider reported a rate or quota limit. Check API billing and usage limits; if credits are available, wait before trying again.`);
+        }
+        throw new Error(`${prefix} Check your key, model access, credits, and image support in settings.`);
+    }
     const result = await response.json();
     const text = anthropic
         ? result.content?.filter(part => part.type === 'text').map(part => part.text).join('\n\n')

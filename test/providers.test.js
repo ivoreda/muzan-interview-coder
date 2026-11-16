@@ -35,3 +35,29 @@ test('empty responses and missing credentials are rejected', async () => {
     await assert.rejects(generateAnswer('anthropic', { key: 'secret', model: 'model' }, content,
         async () => ({ ok: true, json: async () => ({ content: [] }) })), /no text/);
 });
+
+for (const [error, expected] of [
+    [{ code: 'insufficient_quota' }, /API credits or usage quota exhausted/],
+    [{ code: 'credit_balance_exhausted', type: 'insufficient_quota' }, /API credits or usage quota exhausted/],
+    [{ code: 'rate_limit_exceeded' }, /API rate limit reached/],
+    [{ type: 'rate_limit_error', code: 'slow_down' }, /API rate limit reached/],
+    [{ code: 'unknown' }, /rate or quota limit/]
+]) {
+    test(`429 classification: ${JSON.stringify(error)}`, async () => {
+        let calls = 0;
+        await assert.rejects(generateAnswer('openai', { key: 'secret', model: 'model' }, content, async () => {
+            calls++;
+            return { ok: false, status: 429, json: async () => ({ error: { ...error, message: 'secret Solve this' } }) };
+        }), err => {
+            assert.match(err.message, expected);
+            assert.doesNotMatch(err.message, /secret|Solve this/);
+            return true;
+        });
+        assert.equal(calls, 1);
+    });
+}
+
+test('non-JSON 429 responses retain useful guidance', async () => {
+    await assert.rejects(generateAnswer('openai', { key: 'secret', model: 'model' }, content,
+        async () => ({ ok: false, status: 429, json: async () => { throw new SyntaxError('secret'); } })), /rate or quota limit/);
+});
