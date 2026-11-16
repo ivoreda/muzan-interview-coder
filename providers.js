@@ -4,16 +4,23 @@ const PROVIDERS = {
     openrouter: { name: 'OpenRouter', model: 'openai/gpt-4o-mini', url: 'https://openrouter.ai/api/v1/chat/completions' }
 };
 
-async function generateAnswer(provider, profile, content, request = fetch) {
+async function generateAnswer(provider, profile, content, request = fetch, options = {}) {
     const definition = PROVIDERS[provider];
     if (!definition || !profile?.key) throw new Error('Configure your AI provider in settings first.');
     const anthropic = provider === 'anthropic';
-    const blocks = anthropic ? content.map(part => {
+    const convert = parts => parts.map(part => {
         if (part.type === 'text') return part;
-        const match = /^data:image\/png;base64,(.+)$/.exec(part.image_url.url);
+        const match = /^data:(image\/(?:png|jpeg));base64,(.+)$/.exec(part.image_url.url);
         if (!match) throw new Error('Unsupported screenshot format.');
-        return { type: 'image', source: { type: 'base64', media_type: 'image/png', data: match[1] } };
-    }) : content;
+        return { type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } };
+    });
+    const messages = options.messages || [{ role: 'user', content }];
+    const system = messages.filter(message => message.role === 'system').map(message => message.content).join('\n');
+    const routedMessages = anthropic ? messages.filter(message => message.role !== 'system').map(message => ({
+        ...message, content: Array.isArray(message.content) ? convert(message.content) : message.content
+    })) : messages;
+    const streaming = typeof options.onDelta === 'function';
+    const reasoning = /^(o\d|gpt-5)/i.test(profile.model) && !/chat/i.test(profile.model);
     const response = await request(definition.url, {
         method: 'POST',
         headers: anthropic
@@ -21,10 +28,13 @@ async function generateAnswer(provider, profile, content, request = fetch) {
             : { 'Content-Type': 'application/json', Authorization: `Bearer ${profile.key}` },
         body: JSON.stringify({
             model: profile.model,
-            messages: [{ role: 'user', content: blocks }],
-            [provider === 'openai' ? 'max_completion_tokens' : 'max_tokens']: 5000
+            messages: routedMessages,
+            ...(anthropic && system ? { system } : {}),
+            ...(streaming ? { stream: true } : {}),
+            ...(provider === 'openai' && reasoning && options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
+            [provider === 'openai' ? 'max_completion_tokens' : 'max_tokens']: options.maxTokens || (reasoning ? 16000 : 5000)
         }),
-        signal: AbortSignal.timeout(120000)
+        signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000)
     });
     if (!response.ok) {
         // Classify known errors without exposing upstream messages, credentials, or input.
@@ -43,11 +53,43 @@ async function generateAnswer(provider, profile, content, request = fetch) {
         }
         throw new Error(`${prefix} Check your key, model access, credits, and image support in settings.`);
     }
+    if (streaming) return readAnswerStream(response, anthropic, options.onDelta);
     const result = await response.json();
     const text = anthropic
         ? result.content?.filter(part => part.type === 'text').map(part => part.text).join('\n\n')
         : result.choices?.[0]?.message?.content;
     if (typeof text !== 'string' || !text.trim()) throw new Error(`${definition.name} returned no text answer. Try another model.`);
     return text;
+}
+async function readAnswerStream(response, anthropic, onDelta) {
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let text = '';
+    let finishReason = null;
+    const consume = line => {
+        if (!line.startsWith('data:')) return;
+        const data = line.slice(5).trim();
+        if (!data || data === '[DONE]') return;
+        const event = JSON.parse(data);
+        if (event.error || event.type === 'error') throw new Error('The provider interrupted the answer stream. Please try again.');
+        const delta = anthropic ? event.delta?.text : event.choices?.[0]?.delta?.content;
+        if (typeof delta === 'string' && delta) {
+            text += delta;
+            onDelta(delta);
+        }
+        const reason = anthropic ? event.delta?.stop_reason : event.choices?.[0]?.finish_reason;
+        if (reason) finishReason = reason === 'max_tokens' ? 'length' : reason;
+    };
+    for await (const chunk of response.body) {
+        buffer += decoder.decode(chunk, { stream: true });
+        let end;
+        while ((end = buffer.indexOf('\n')) !== -1) {
+            consume(buffer.slice(0, end).replace(/\r$/, ''));
+            buffer = buffer.slice(end + 1);
+        }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) consume(buffer);
+    return { text, finishReason };
 }
 module.exports = { PROVIDERS, generateAnswer };

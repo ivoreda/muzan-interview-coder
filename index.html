@@ -3,7 +3,10 @@
 
 <head>
   <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
   <title>Muzan Interview Coder</title>
+  <link rel="stylesheet" href="node_modules/@highlightjs/cdn-assets/styles/github-dark.min.css" />
   <style>
     html {
       width: 100%;
@@ -17,21 +20,22 @@
       width: 100%;
       height: 100%;
       background: none;
-      font-family: Arial, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
       overflow: hidden;
       position: relative;
     }
 
-    /* Improved instruction banner */
     #instruction-banner {
       position: fixed;
       top: 0;
       left: 50%;
       transform: translateX(-50%);
+      max-width: calc(100% - 24px);
+      box-sizing: border-box;
       background: rgba(0, 0, 0, 0.85);
       color: #fff;
       padding: 8px 15px;
-      font-size: 14px;
+      font-size: 13px;
       border-radius: 0 0 8px 8px;
       z-index: 10001;
       box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
@@ -44,15 +48,13 @@
       position: fixed;
       top: 55px;
       right: 1%;
-      left: auto;
-      transform: none;
       width: 19%;
       height: calc(100vh - 75px);
-      max-height: calc(100vh - 75px);
       overflow-y: auto;
       background: rgba(0, 0, 0, 0.88);
       color: #d8d8d8;
       padding: 10px 14px;
+      box-sizing: border-box;
       font-size: 13px;
       line-height: 1.45;
       border-radius: 8px;
@@ -82,6 +84,21 @@
       font-style: italic;
     }
 
+    .mic-meter {
+      height: 4px;
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+
+    #mic-meter-fill {
+      height: 100%;
+      width: 0%;
+      background: #4cd37a;
+      transition: width 0.08s linear;
+    }
+
     #response-overlay {
       position: fixed;
       top: 0;
@@ -106,21 +123,47 @@
       position: absolute;
       top: 55px;
       left: 1%;
-      transform: none;
       width: 78%;
-      max-width: none;
       height: calc(100vh - 75px);
-      max-height: calc(100vh - 75px);
       overflow-y: auto;
       background: rgba(25, 25, 25, 0.95);
       color: #fff;
-      padding: 20px;
+      padding: 0 20px 20px;
       box-sizing: border-box;
       font-size: 15px;
       line-height: 1.5;
       border-radius: 8px;
       box-shadow: 0 5px 20px rgba(0, 0, 0, 0.3);
       -webkit-app-region: no-drag;
+    }
+
+    #response-status {
+      position: sticky;
+      top: 0;
+      margin: 0 -20px 12px;
+      padding: 8px 20px;
+      font-size: 12px;
+      color: #9a9a9a;
+      background: rgba(25, 25, 25, 0.98);
+      border-bottom: 1px solid #2c2c2c;
+      min-height: 15px;
+    }
+
+    #response-status.busy::before {
+      content: '';
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      margin-right: 8px;
+      vertical-align: -1px;
+      border: 2px solid #555;
+      border-top-color: #9ad0ff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
 
     #response-box::-webkit-scrollbar {
@@ -138,7 +181,8 @@
     }
 
     pre {
-      background: #1e1e1e;
+      position: relative;
+      background: #0d1117;
       color: #d4d4d4;
       padding: 15px;
       border-radius: 6px;
@@ -146,35 +190,54 @@
       overflow-x: auto;
       margin: 1.2em 0;
       border: 1px solid #333;
-      font-family: 'Fira Code', Consolas, 'Courier New', monospace;
+      font-family: 'Fira Code', Menlo, Consolas, 'Courier New', monospace;
       font-size: 14px;
     }
 
     code {
-      font-family: 'Fira Code', Consolas, 'Courier New', monospace;
+      font-family: 'Fira Code', Menlo, Consolas, 'Courier New', monospace;
       background: rgba(255, 255, 255, 0.1);
       color: #e69d45;
       padding: 2px 5px;
       border-radius: 3px;
     }
 
-    pre code {
+    pre code,
+    pre code.hljs {
       background: none;
       color: inherit;
       padding: 0;
       border-radius: 0;
     }
 
-    #response-box p {
+    .copy-btn {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      padding: 3px 10px;
+      font-size: 12px;
+      color: #ddd;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid #444;
+      border-radius: 4px;
+      cursor: pointer;
+      opacity: 0.6;
+    }
+
+    .copy-btn:hover {
+      opacity: 1;
+    }
+
+    #response-content p {
       margin: 0 0 12px 0;
     }
 
-    #response-box p:last-child {
+    #response-content p:last-child {
       margin-bottom: 0;
     }
 
     .error-message {
-      color: #ff4444;
+      color: #ff6b6b;
       background: rgba(255, 68, 68, 0.1);
       padding: 15px;
       border-radius: 6px;
@@ -214,282 +277,21 @@
   <div id="instruction-banner"></div>
   <div id="transcript-preview" aria-live="polite">
     <div class="label">Transcript (sent on Answer)</div>
+    <div class="mic-meter"><div id="mic-meter-fill"></div></div>
     <div id="transcript-text" class="empty">Listening for speech…</div>
   </div>
   <div id="response-overlay">
-    <div id="response-box"></div>
+    <div id="response-box">
+      <div id="response-status"></div>
+      <div id="response-content"></div>
+    </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script>
-    const { ipcRenderer } = require('electron');
+  <script src="node_modules/marked/lib/marked.umd.js"></script>
+  <script src="node_modules/dompurify/dist/purify.min.js"></script>
+  <script src="node_modules/@highlightjs/cdn-assets/highlight.min.js"></script>
+  <script src="renderer.js"></script>
 
-    let keyConfigured = false;
-    let providerStatus = null;
-    const providerSelect = document.getElementById('provider');
-    const modelInput = document.getElementById('model');
-    function updateProviderForm() {
-      const profile = providerStatus?.profiles[providerSelect.value];
-      modelInput.value = profile?.model || '';
-      keyInput.value = '';
-      document.getElementById('saved-key-note').textContent = profile?.configured
-        ? 'A key is saved for this provider. Leave the key blank to keep it.' : 'Enter a key for this provider.';
-    }
-    providerSelect.onchange = updateProviderForm;
-    const keyDialog = document.getElementById('key-settings');
-    const keyInput = document.getElementById('api-key');
-    async function openKeySettings() {
-      try {
-        providerStatus = await ipcRenderer.invoke('api-key-status');
-      } catch (_) { return; }
-      keyConfigured = providerStatus.configured;
-      providerSelect.value = providerStatus.provider;
-      updateProviderForm();
-      keyInput.value = '';
-      document.getElementById('key-error').textContent = '';
-      document.getElementById('cancel-key').hidden = !keyConfigured;
-      keyDialog.hidden = false;
-      keyInput.focus();
-    }
-    ipcRenderer.on('open-api-key-settings', openKeySettings);
-    document.getElementById('key-settings-button').onclick = openKeySettings;
-    document.getElementById('cancel-key').onclick = () => {
-      keyInput.value = '';
-      keyDialog.hidden = true;
-    };
-    document.getElementById('key-form').onsubmit = async (event) => {
-      event.preventDefault();
-      const button = document.getElementById('save-key');
-      button.disabled = true;
-      try {
-        const result = await ipcRenderer.invoke('save-api-key', { provider: providerSelect.value, key: keyInput.value, model: modelInput.value });
-        if (result.error) {
-          document.getElementById('key-error').textContent = result.error;
-        } else {
-          providerStatus = result;
-          keyConfigured = true;
-          keyInput.value = '';
-          keyDialog.hidden = true;
-        }
-      } catch (_) {
-        document.getElementById('key-error').textContent = 'Could not save the API key. Please try again.';
-      } finally {
-        button.disabled = false;
-      }
-    };
-    ipcRenderer.invoke('api-key-status').then(({ configured }) => {
-      keyConfigured = configured;
-      if (!configured) openKeySettings();
-    });
-
-    let mediaStream = null;
-    let audioContext = null;
-    let processorNode = null;
-    let silentGain = null;
-
-    marked.setOptions({
-      sanitize: false, // marked doesn't suggest sanitize: true anymore, use a library if needed
-      breaks: true,
-      gfm: true
-    });
-
-    function floatTo16BitPCM(float32Array) {
-      const pcm = new Int16Array(float32Array.length);
-      for (let i = 0; i < float32Array.length; i++) {
-        const s = Math.max(-1, Math.min(1, float32Array[i]));
-        pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-      }
-      return pcm;
-    }
-
-    // Linear resample to 24 kHz (AudioContext often ignores the requested rate).
-    function resampleTo24k(float32Array, inputRate) {
-      if (inputRate === 24000) return float32Array;
-      const ratio = inputRate / 24000;
-      const outLength = Math.max(1, Math.floor(float32Array.length / ratio));
-      const output = new Float32Array(outLength);
-      for (let i = 0; i < outLength; i++) {
-        const srcIndex = i * ratio;
-        const i0 = Math.floor(srcIndex);
-        const i1 = Math.min(i0 + 1, float32Array.length - 1);
-        const frac = srcIndex - i0;
-        output[i] = float32Array[i0] * (1 - frac) + float32Array[i1] * frac;
-      }
-      return output;
-    }
-
-    function stopAudioCapture() {
-      if (processorNode) {
-        try { processorNode.disconnect(); } catch (_) {}
-        processorNode.onaudioprocess = null;
-        processorNode = null;
-      }
-      if (silentGain) {
-        try { silentGain.disconnect(); } catch (_) {}
-        silentGain = null;
-      }
-      if (audioContext) {
-        audioContext.close().catch(() => {});
-        audioContext = null;
-      }
-      if (mediaStream) {
-        mediaStream.getTracks().forEach(track => track.stop());
-        mediaStream = null;
-      }
-    }
-
-    async function startAudioCapture() {
-      stopAudioCapture();
-      mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true
-        }
-      });
-
-      audioContext = new AudioContext({ sampleRate: 24000 });
-      const source = audioContext.createMediaStreamSource(mediaStream);
-      processorNode = audioContext.createScriptProcessor(4096, 1, 1);
-      silentGain = audioContext.createGain();
-      silentGain.gain.value = 0;
-
-      processorNode.onaudioprocess = (event) => {
-        const input = event.inputBuffer.getChannelData(0);
-        const resampled = resampleTo24k(input, audioContext.sampleRate);
-        const pcm = floatTo16BitPCM(resampled);
-        const base64 = Buffer.from(pcm.buffer).toString('base64');
-        ipcRenderer.send('audio-chunk', base64);
-      };
-
-      source.connect(processorNode);
-      processorNode.connect(silentGain);
-      silentGain.connect(audioContext.destination);
-
-      if (audioContext.state === 'suspended') {
-        await audioContext.resume();
-      }
-    }
-
-    let listeningActive = false;
-    let latestTranscript = '';
-
-    const showOverlay = () => {
-      const overlay = document.getElementById('response-overlay');
-      overlay.classList.add('visible');
-    };
-
-    const hideOverlay = () => {
-      const overlay = document.getElementById('response-overlay');
-      overlay.classList.remove('visible');
-    };
-
-    const updateBanner = (text, show = true) => {
-      const banner = document.getElementById('instruction-banner');
-      banner.style.opacity = show ? '1' : '0';
-      if (text) banner.textContent = text;
-    };
-
-    const setTranscriptPreview = (text, listening) => {
-      const panel = document.getElementById('transcript-preview');
-      const body = document.getElementById('transcript-text');
-      listeningActive = !!listening;
-      latestTranscript = text || '';
-
-      if (!listening) {
-        panel.classList.remove('visible');
-        body.textContent = '';
-        body.classList.add('empty');
-        return;
-      }
-
-      panel.classList.add('visible');
-      const trimmed = latestTranscript.trim();
-      if (trimmed) {
-        body.textContent = trimmed;
-        body.classList.remove('empty');
-      } else {
-        body.textContent = 'Listening for follow-up…';
-        body.classList.add('empty');
-      }
-      panel.scrollTop = panel.scrollHeight;
-    };
-
-    const handlers = {
-      'analysis-result': (event, result) => {
-        showOverlay();
-        document.getElementById('response-box').innerHTML = marked.parse(result);
-        updateBanner("Ctrl+Shift+R: Repeat | Ctrl+Shift+W: Hide | Ctrl+Shift+Q: Quit");
-      },
-
-      'error': (event, error) => {
-        showOverlay();
-        document.getElementById('response-box').innerHTML =
-          `<div class="error-message">
-            <strong>Error:</strong> ${error}
-            <br><small>Press Ctrl+Shift+R to try again</small>
-          </div>`;
-      },
-
-      'update-instruction': (event, instruction) => {
-        updateBanner(instruction, true);
-      },
-
-      'hide-instruction': () => {
-        updateBanner('', false);
-      },
-
-      'hide-app': () => {
-        updateBanner('', false);
-        hideOverlay();
-        document.getElementById('transcript-preview').classList.remove('visible');
-      },
-
-      'show-app': () => {
-        updateBanner('', true);
-        showOverlay();
-      },
-
-      'clear-result': () => {
-        document.getElementById('response-box').innerHTML = "";
-        hideOverlay();
-      },
-
-      'transcript-update': (event, payload) => {
-        const text = typeof payload === 'string' ? payload : payload?.text;
-        const listening = typeof payload === 'object' ? !!payload?.listening : true;
-        setTranscriptPreview(text, listening);
-      },
-
-      'start-listening': async () => {
-        try {
-          await startAudioCapture();
-          setTranscriptPreview('', true);
-        } catch (err) {
-          updateBanner('Microphone access denied: ' + err.message, true);
-          ipcRenderer.send('listen-failed', err.message);
-        }
-      },
-
-      'stop-listening': () => {
-        stopAudioCapture();
-        setTranscriptPreview('', false);
-      }
-    };
-
-    Object.entries(handlers).forEach(([channel, handler]) => {
-      ipcRenderer.on(channel, handler);
-    });
-
-    window.addEventListener('unload', () => {
-      stopAudioCapture();
-      Object.keys(handlers).forEach(channel => {
-        ipcRenderer.removeAllListeners(channel);
-      });
-    });
-
-    updateBanner("Ctrl+Shift+V: Listen | Ctrl+Shift+Enter: Answer | Ctrl+Shift+S: Screenshot | Ctrl+Shift+A: Multi | Ctrl+Shift+W: Hide | Ctrl+Shift+Q: Quit");
-  </script>
 </body>
 
 </html>
