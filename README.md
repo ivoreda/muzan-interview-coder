@@ -77,5 +77,20 @@ If a shortcut is already taken by another app, the banner tells you which one; r
 4. For on-screen problems or code to troubleshoot: **multi** (or **screenshot** for image-only solve). To combine speech and screen, capture with **multi**, then press **answer**.
 5. The answer streams into the overlay window.
 
+## Packaging (macOS / Windows)
+Installers are built with electron-builder into `dist/`:
+
+```bash
+npm run dist:mac   # .dmg + .zip for Apple Silicon (arm64) and Intel (x64)
+npm run dist:win   # NSIS installer (.exe) for Windows x64
+npm run dist       # both
+```
+
+`config.json` is **never bundled** (it can hold an API key). In an installed app, put an optional `config.json` in the user-data folder instead:
+- macOS: `~/Library/Application Support/muzan-interview-coder/config.json`
+- Windows: `%APPDATA%\muzan-interview-coder\config.json`
+
+Builds are unsigned unless you supply signing certificates (see https://electron.build/code-signing). Unsigned macOS apps must be opened with right-click → Open (or `xattr -cr "/Applications/Muzan Interview Coder.app"`); on Windows, SmartScreen will show "More info → Run anyway". On macOS, grant Microphone, Screen Recording and Accessibility (for global key hooks) permissions on first run.
+
 ## Security notes
 The overlay renders model output as HTML, and that output can echo text from screenshots. So the renderer runs sandboxed with context isolation (no Node access), output is sanitized with DOMPurify, and a Content-Security-Policy blocks remote scripts and images. Libraries are bundled from `node_modules`, not loaded from a CDN.

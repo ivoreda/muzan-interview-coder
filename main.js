@@ -38,9 +38,12 @@ function isReasoningModel(model) {
 }
 
 function loadConfig() {
-    const configPath = path.join(__dirname, 'config.json');
+    // Packaged builds look in the per-user data folder first (the app bundle is read-only);
+    // a config.json next to main.js still works when running from source.
+    const candidates = [path.join(app.getPath('userData'), 'config.json'), path.join(__dirname, 'config.json')];
+    const configPath = candidates.find(p => fs.existsSync(p));
     let fileConfig = {};
-    if (fs.existsSync(configPath)) {
+    if (configPath) {
         try {
             fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         } catch (err) {
