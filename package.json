@@ -8,7 +8,8 @@
     "dist:mac": "electron-builder --mac",
     "dist:mac:local": "electron-builder --mac --config.mac.identity=- --config.mac.notarize=false --config.directories.output=dist/local-mac",
     "dist:win": "electron-builder --win",
-    "dist": "electron-builder --mac --win"
+    "dist": "electron-builder --mac --win",
+    "release": "npm run dist && bash scripts/release.sh"
   },
   "dependencies": {
     "@highlightjs/cdn-assets": "11.12.0",
@@ -40,7 +41,9 @@
       "!docs/**",
       "!dist/**",
       "!README.md",
-      "!**/.DS_Store"
+      "!**/.DS_Store",
+      "!install.sh",
+      "!scripts/**"
     ],
     "asarUnpack": [
       "node_modules/screenshot-desktop/**",
@@ -70,7 +73,9 @@
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Muzan Interview Coder listens to the interview audio to transcribe questions."
-      }
+      },
+      "artifactName": "${name}-mac-${arch}.${ext}",
+      "identity": "-"
     },
     "win": {
       "target": [
@@ -80,7 +85,8 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "artifactName": "${name}-windows-setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
