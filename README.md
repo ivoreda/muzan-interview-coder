@@ -90,7 +90,11 @@ npm run dist       # both
 - macOS: `~/Library/Application Support/muzan-interview-coder/config.json`
 - Windows: `%APPDATA%\muzan-interview-coder\config.json`
 
-Builds are unsigned unless you supply signing certificates (see https://electron.build/code-signing). Unsigned macOS apps must be opened with right-click → Open (or `xattr -cr "/Applications/Muzan Interview Coder.app"`); on Windows, SmartScreen will show "More info → Run anyway". On macOS, grant Microphone, Screen Recording and Accessibility (for global key hooks) permissions on first run.
+For macOS downloads you plan to share, configure a Developer ID Application certificate and Apple notarization credentials before running `npm run dist:mac`. Verify the signed app and its stapled notarization ticket before uploading it. See the [electron-builder signing guide](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/).
+
+For testing on your build Mac without an Apple signing certificate, run `npm run dist:mac:local`. It creates ad-hoc signed packages in `dist/local-mac/` for local use. On macOS, grant Microphone, Screen Recording, and Accessibility (for global key hooks) permissions on first run.
+
+Windows builds without a signing certificate may show a SmartScreen prompt.
 
 ## Security notes
 The overlay renders model output as HTML, and that output can echo text from screenshots. So the renderer runs sandboxed with context isolation (no Node access), output is sanitized with DOMPurify, and a Content-Security-Policy blocks remote scripts and images. Libraries are bundled from `node_modules`, not loaded from a CDN.
