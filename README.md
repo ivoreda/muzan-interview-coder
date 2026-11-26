@@ -77,24 +77,33 @@ If a shortcut is already taken by another app, the banner tells you which one; r
 4. For on-screen problems or code to troubleshoot: **multi** (or **screenshot** for image-only solve). To combine speech and screen, capture with **multi**, then press **answer**.
 5. The answer streams into the overlay window.
 
-## Packaging (macOS / Windows)
+## Install
+
+**macOS** — paste into Terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ivoreda/muzan-interview-coder/main/install.sh | bash
+```
+
+It downloads the latest release for your Mac (Apple Silicon or Intel), installs it into `/Applications` and opens it. Installing this way avoids the "unidentified developer" block, because the app isn't notarized by Apple. On first launch, allow Microphone, Screen Recording and Accessibility (System Settings → Privacy & Security). After an update, macOS may ask again, and may ask to let the app use its "Safe Storage" keychain item — choose **Always Allow**.
+
+**Windows** — download `muzan-interview-coder-windows-setup.exe` from the [latest release](https://github.com/ivoreda/muzan-interview-coder/releases/latest) and run it. SmartScreen will warn because it is unsigned: **More info → Run anyway**.
+
+## Packaging and releasing
 Installers are built with electron-builder into `dist/`:
 
 ```bash
-npm run dist:mac   # .dmg + .zip for Apple Silicon (arm64) and Intel (x64)
-npm run dist:win   # NSIS installer (.exe) for Windows x64
+npm run dist:mac   # muzan-interview-coder-mac-{arm64,x64}.{dmg,zip}
+npm run dist:win   # muzan-interview-coder-windows-setup.exe
 npm run dist       # both
+npm run release    # build both, then upload to the GitHub release v<package.json version>
 ```
 
-`config.json` is **never bundled** (it can hold an API key). In an installed app, put an optional `config.json` in the user-data folder instead:
-- macOS: `~/Library/Application Support/muzan-interview-coder/config.json`
-- Windows: `%APPDATA%\muzan-interview-coder\config.json`
+To ship an update: bump `version` in `package.json`, run `npm run release`. `install.sh` always fetches the newest release, so the install command never changes. The release step needs the GitHub CLI (`gh auth login`) with write access to the repo.
 
-For macOS downloads you plan to share, configure a Developer ID Application certificate and Apple notarization credentials before running `npm run dist:mac`. Verify the signed app and its stapled notarization ticket before uploading it. See the [electron-builder signing guide](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/).
-
-For testing on your build Mac without an Apple signing certificate, run `npm run dist:mac:local`. It creates ad-hoc signed packages in `dist/local-mac/` for local use. On macOS, grant Microphone, Screen Recording, and Accessibility (for global key hooks) permissions on first run.
-
-Windows builds without a signing certificate may show a SmartScreen prompt.
+The macOS app is ad-hoc signed (no Apple Developer ID). `config.json` is **never bundled** (it can hold an API key); in an installed app, put an optional `config.json` in the user-data folder instead:
+- macOS: `~/Library/Application Support/Muzan Interview Coder/config.json`
+- Windows: `%APPDATA%\Muzan Interview Coder\config.json`
 
 ## Security notes
 The overlay renders model output as HTML, and that output can echo text from screenshots. So the renderer runs sandboxed with context isolation (no Node access), output is sanitized with DOMPurify, and a Content-Security-Policy blocks remote scripts and images. Libraries are bundled from `node_modules`, not loaded from a CDN.
